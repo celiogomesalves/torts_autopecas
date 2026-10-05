@@ -30,7 +30,7 @@ import {
 } from "@/lib/db";
 import { buildRefsSearchMap, buildRefsBrandMap, productMatchesBrand } from "@/lib/product-search";
 import { generateStockCode, validateStockCode } from "@/lib/stock-code";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -166,7 +166,7 @@ function SalesPage() {
     queryFn: async () => {
       const m = await fetchMyMembership(cid);
       if (!m || !user?.id) return m;
-      const { data: prof } = await supabase
+      const { data: prof } = await appwrite
         .from("profiles")
         .select("name")
         .eq("id", user.id)
@@ -216,7 +216,7 @@ function SalesPage() {
   const companySettingsQ = useQuery({
     queryKey: ["company-settings", cid],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data } = await appwrite
         .from("company_settings" as any)
         .select("*")
         .eq("company_id", cid)
@@ -244,7 +244,7 @@ function SalesPage() {
   const fiscalSettingsQ = useQuery({
     queryKey: ["fiscal-settings", cid],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data } = await appwrite
         .from("fiscal_settings")
         .select("*")
         .eq("company_id", cid)
@@ -325,7 +325,7 @@ function SalesPage() {
     queryKey: ["current-session-sales", cid, currentRegister?.id],
     queryFn: async () => {
       if (!isCashOpen || !currentRegister) return [];
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("sales")
         .select("*, profiles(name)")
         .eq("company_id", cid)
@@ -343,7 +343,7 @@ function SalesPage() {
     queryKey: ["cash-transactions", currentRegister?.id],
     queryFn: async () => {
       if (!currentRegister) return [];
-      const { data, error } = await (supabase as any)
+      const { data, error } = await (appwrite as any)
         .from("cash_transactions")
         .select("*")
         .eq("cash_register_id", currentRegister.id)
@@ -428,7 +428,7 @@ function SalesPage() {
     setIsVerifying(true);
     try {
       if (!hasSpecialAccess) {
-        const { error: authError } = await supabase.auth.signInWithPassword({
+        const { error: authError } = await appwrite.auth.signInWithPassword({
           email: user?.email!,
           password: password,
         });
@@ -1232,7 +1232,7 @@ function SalesPage() {
       try {
         if (!currentSaleId) {
           // Double check before creating to prevent race conditions
-          const { data: existingOpen } = await supabase
+          const { data: existingOpen } = await appwrite
             .from("sales")
             .select("id")
             .eq("company_id", cid)
@@ -3511,7 +3511,7 @@ function SaleDetailDialog({
     queryKey: ["sale-detail", saleId],
     enabled: !!saleId,
     queryFn: async () => {
-      const sb = supabase as any;
+      const sb = appwrite as any;
       const { data: sale, error: sErr } = await sb
         .from("sales")
         .select("*")

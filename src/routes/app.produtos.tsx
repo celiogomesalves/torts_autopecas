@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import {
   fetchProducts,
   fetchCategories,
@@ -274,7 +274,7 @@ function ProductsPage() {
   const companySettingsQ = useQuery({
     queryKey: ["company-settings", cid],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("company_settings")
         .select("*")
         .eq("company_id", cid)
@@ -291,7 +291,7 @@ function ProductsPage() {
   const barcodeSettingsQ = useQuery({
     queryKey: ["company-settings", cid, "barcode-scanner"],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("company_settings" as any)
         .select("barcode_scanner_enabled")
         .eq("company_id", cid)
@@ -307,7 +307,7 @@ function ProductsPage() {
   const aiSettingsQ = useQuery({
     queryKey: ["company-settings", cid, "ai"],
     queryFn: async () => {
-      const { data, error } = await supabase.rpc("get_ai_settings" as any, { _company: cid });
+      const { data, error } = await appwrite.rpc("get_ai_settings" as any, { _company: cid });
       if (error) throw error;
       return {
         enabled: (data as any).enabled,
@@ -321,7 +321,7 @@ function ProductsPage() {
   const systemAiQ = useQuery({
     queryKey: ["system-settings", "ai-product-lookup"],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data } = await appwrite
         .from("system_settings" as any)
         .select("ai_product_lookup_enabled")
         .maybeSingle();
@@ -494,7 +494,7 @@ function ProductsPage() {
   const membersQ = useQuery({
     queryKey: ["company-members", cid],
     queryFn: async () => {
-      const { data: ms, error } = await supabase
+      const { data: ms, error } = await appwrite
         .from("memberships")
         .select("user_id")
         .eq("company_id", cid)
@@ -502,7 +502,7 @@ function ProductsPage() {
       if (error) throw error;
       const ids = (ms ?? []).map((m: any) => m.user_id).filter(Boolean);
       if (ids.length === 0) return [];
-      const { data: profs, error: pErr } = await supabase
+      const { data: profs, error: pErr } = await appwrite
         .from("profiles")
         .select("id, name, email")
         .in("id", ids);
@@ -579,7 +579,7 @@ function ProductsPage() {
 
     setAiLookupLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke("product-ai-lookup", {
+      const { data, error } = await appwrite.functions.invoke("product-ai-lookup", {
         body: {
           query: term,
           brand: selectedBrand,
@@ -904,7 +904,7 @@ function ProductsPage() {
   // Retorna mensagem de bloqueio ou null se livre.
   const checkProductLock = async (productId: string): Promise<string | null> => {
     // 1. Delivery: buscar sale_items do produto e cruzar com delivery_orders ativos
-    const { data: itemRows } = await supabase
+    const { data: itemRows } = await appwrite
       .from("sale_items")
       .select("sale_id")
       .eq("product_id", productId);
@@ -912,7 +912,7 @@ function ProductsPage() {
       new Set((itemRows || []).map((r: any) => r.sale_id).filter(Boolean)),
     );
     if (saleIds.length) {
-      const { data: orders } = await supabase
+      const { data: orders } = await appwrite
         .from("delivery_orders")
         .select("id, customer_name, status")
         .in("sale_id", saleIds)
@@ -922,7 +922,7 @@ function ProductsPage() {
       }
     }
     // 2. PDV: reservas temporárias no carrinho
-    const { data: pdvReservations } = await (supabase as any)
+    const { data: pdvReservations } = await (appwrite as any)
       .from("stock_reservations")
       .select("id")
       .eq("product_id", productId)
@@ -1549,7 +1549,7 @@ function ProductsPage() {
           const product = products.find((p) => p.id === productId);
           const productName = product?.name || productId;
 
-          const { error } = await supabase
+          const { error } = await appwrite
             .from("products")
             .update({
               location_id: locId === "none" ? null : locId,
@@ -2415,7 +2415,7 @@ function ProductsPage() {
                                   const pathParts = url.pathname.split("/product-images/");
                                   if (pathParts.length > 1) {
                                     const filePath = decodeURIComponent(pathParts[1]);
-                                    await supabase.storage
+                                    await appwrite.storage
                                       .from("product-images")
                                       .remove([filePath]);
                                   }
@@ -2478,7 +2478,7 @@ function ProductsPage() {
                                     try {
                                       if (!blob) throw new Error("Falha ao gerar blob da imagem");
                                       const fileName = `${cid}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, "_")}`;
-                                      const { data, error } = await supabase.storage
+                                      const { data, error } = await appwrite.storage
                                         .from("product-images")
                                         .upload(fileName, blob, {
                                           contentType: "image/jpeg",
@@ -2490,7 +2490,7 @@ function ProductsPage() {
 
                                       const {
                                         data: { publicUrl },
-                                      } = supabase.storage
+                                      } = appwrite.storage
                                         .from("product-images")
                                         .getPublicUrl(data.path);
 

@@ -3,7 +3,7 @@ import { PageHeading } from "@/components/page-header";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import { useAuth } from "@/lib/auth-context";
 import {
   fetchCompanyRoles,
@@ -211,7 +211,7 @@ function SettingsPage() {
     queryKey: ["my-membership", user?.id, currentCompanyId],
     enabled: !!user && !!currentCompanyId,
     queryFn: async () => {
-      const { data } = await supabase
+      const { data } = await appwrite
         .from("memberships")
         .select("role")
         .eq("user_id", user!.id)
@@ -275,7 +275,7 @@ function SettingsPage() {
               qc.prefetchQuery({
                 queryKey: ["company-detail", currentCompanyId],
                 queryFn: async () => {
-                  const { data, error } = await supabase
+                  const { data, error } = await appwrite
                     .from("companies")
                     .select("id, name, cnpj")
                     .eq("id", currentCompanyId!)
@@ -325,7 +325,7 @@ function CompanyTab() {
   const companyQ = useQuery({
     queryKey: ["company-detail", cid],
     queryFn: async () => {
-      const { data, error } = await supabase.from("companies").select("*").eq("id", cid).single();
+      const { data, error } = await appwrite.from("companies").select("*").eq("id", cid).single();
       if (error) throw error;
       return data as unknown as Company;
     },
@@ -335,7 +335,7 @@ function CompanyTab() {
   const fiscalQ = useQuery({
     queryKey: ["fiscal-settings", cid],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("fiscal_settings")
         .select("*")
         .eq("company_id", cid)
@@ -376,20 +376,20 @@ function CompanyTab() {
   const saveMut = useMutation({
     mutationFn: async () => {
       // Update company name/cnpj
-      const { error: compError } = await (supabase.from("companies") as any)
+      const { error: compError } = await (appwrite.from("companies") as any)
         .update({ name, cnpj, phone, zip_code: zipCode })
         .eq("id", cid);
       if (compError) throw compError;
 
       // Upsert fiscal settings
-      const { data: existing } = await supabase
+      const { data: existing } = await appwrite
         .from("fiscal_settings")
         .select("company_id")
         .eq("company_id", cid)
         .maybeSingle();
 
       if (existing) {
-        const { error: fiscalError } = await supabase
+        const { error: fiscalError } = await appwrite
           .from("fiscal_settings")
           .update({
             razao_social: razaoSocial,
@@ -401,7 +401,7 @@ function CompanyTab() {
           .eq("company_id", cid);
         if (fiscalError) throw fiscalError;
       } else {
-        const { error: fiscalError } = await supabase
+        const { error: fiscalError } = await appwrite
           .from("fiscal_settings")
           .insert({ company_id: cid, razao_social: razaoSocial, cnpj, ie, endereco });
         if (fiscalError) throw fiscalError;
@@ -1175,7 +1175,7 @@ function FinancialTab() {
   const { data: companySettings, isLoading } = useQuery({
     queryKey: ["company-settings", cid],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("company_settings")
         .select("*")
         .eq("company_id", cid)
@@ -1227,7 +1227,7 @@ function FinancialTab() {
 
   const updateMut = useMutation({
     mutationFn: async (val: number) => {
-      const { error } = await supabase
+      const { error } = await appwrite
         .from("company_settings")
         .upsert({
           company_id: cid,
@@ -1245,7 +1245,7 @@ function FinancialTab() {
 
   const updateCashflowMut = useMutation({
     mutationFn: async (val: string) => {
-      const { error } = await supabase
+      const { error } = await appwrite
         .from("company_settings")
         .upsert({
           company_id: cid,
@@ -1263,7 +1263,7 @@ function FinancialTab() {
 
   const updateBarcodeMut = useMutation({
     mutationFn: async (enabled: boolean) => {
-      const { error } = await supabase
+      const { error } = await appwrite
         .from("company_settings")
         .upsert({
           company_id: cid,
@@ -1373,7 +1373,7 @@ function FinancialTab() {
                 size="sm"
                 variant="outline"
                 onClick={() => {
-                  supabase
+                  appwrite
                     .from("company_settings")
                     .upsert({ company_id: cid, stock_code_prefix: stockPrefix })
                     .then(() => toast.success("Prefixo salvo"));
@@ -1404,7 +1404,7 @@ function WebhookTestDialog({ webhookUrl }: { webhookUrl: string }) {
     setLoading(true);
     setResult(null);
     try {
-      const { data, error } = await supabase.functions.invoke("product-ai-lookup", {
+      const { data, error } = await appwrite.functions.invoke("product-ai-lookup", {
         body: { query, brand, model: webhookUrl },
       });
       if (error) throw error;
@@ -1487,7 +1487,7 @@ function IntegrationsTab() {
   const { data: companySettings, isLoading } = useQuery({
     queryKey: ["company-settings", cid],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("company_settings")
         .select("*")
         .eq("company_id", cid)
@@ -1525,7 +1525,7 @@ function IntegrationsTab() {
         updated_at: new Date().toISOString(),
       };
       if (normalizedToken) payload.ai_token = normalizedToken;
-      const { error } = await supabase.from("company_settings").upsert(payload);
+      const { error } = await appwrite.from("company_settings").upsert(payload);
       if (error) throw error;
     },
     onSuccess: () => {
@@ -1538,11 +1538,11 @@ function IntegrationsTab() {
     mutationFn: async () => {
       const normalizedToken =
         aiModel === "custom/n8n-webhook" ? aiToken.trim() : normalizeAiToken(aiToken);
-      const { data, error } = await supabase.functions.invoke("test-ai-connection", {
+      const { data, error } = await appwrite.functions.invoke("test-ai-connection", {
         body: { model: aiModel, token: normalizedToken, company_id: cid },
       });
       if (error || !data?.ok) throw new Error(data?.error || "Falha na conexão");
-      await supabase
+      await appwrite
         .from("company_settings")
         .upsert({
           company_id: cid,
@@ -1769,7 +1769,7 @@ function ReceiptConfigTab() {
   const companyQ = useQuery({
     queryKey: ["company-detail", cid],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("companies")
         .select("id, name, cnpj")
         .eq("id", cid)
@@ -2066,7 +2066,7 @@ function ReceiptPreviewContent({ settings }: { settings: any }) {
   const fiscalQ = useQuery({
     queryKey: ["fiscal-settings", currentCompanyId],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data } = await appwrite
         .from("fiscal_settings")
         .select("*")
         .eq("company_id", currentCompanyId!)

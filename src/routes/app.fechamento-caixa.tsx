@@ -6,7 +6,7 @@ import { useMemo, useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
 import { isSuperAdmin, hasPermission } from "@/lib/db";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -148,7 +148,7 @@ function CashManagementPage() {
   const registersQ = useQuery({
     queryKey: ["cash-registers", cid, canSeeAll, currentUser?.id],
     queryFn: async () => {
-      let query = (supabase as any)
+      let query = (appwrite as any)
         .from("cash_registers")
         .select("*, profiles!user_id_open(name)")
         .eq("company_id", cid);
@@ -168,7 +168,7 @@ function CashManagementPage() {
   const allTransactionsQ = useQuery({
     queryKey: ["all-cash-transactions", cid, canSeeAll, currentUser?.id],
     queryFn: async () => {
-      let query = (supabase as any)
+      let query = (appwrite as any)
         .from("cash_transactions")
         .select("*, cash_registers(opened_at, profiles!user_id_open(name))")
         .eq("company_id", cid);
@@ -238,7 +238,7 @@ function CashManagementPage() {
   const fiscalSettingsQ = useQuery({
     queryKey: ["fiscal-settings", cid],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data } = await appwrite
         .from("fiscal_settings")
         .select("*")
         .eq("company_id", cid)
@@ -268,7 +268,7 @@ function CashManagementPage() {
     queryKey: ["current-session-sales", cid, currentRegister?.id],
     queryFn: async () => {
       if (!currentRegister) return [];
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("sales")
         .select("*, profiles(name)")
         .eq("company_id", cid)
@@ -460,7 +460,7 @@ function CashManagementPage() {
     queryKey: ["cash-transactions", currentRegister?.id],
     queryFn: async () => {
       if (!currentRegister) return [];
-      const { data, error } = await (supabase as any)
+      const { data, error } = await (appwrite as any)
         .from("cash_transactions")
         .select(
           `

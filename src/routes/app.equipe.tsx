@@ -86,8 +86,8 @@ function TeamPage() {
     queryKey: ["invite-code", cid],
     enabled: !!cid,
     queryFn: async () => {
-      const { appwrite: supabase } = await import("@/integrations/appwrite/client");
-      const { data } = await supabase.rpc("get_company_invite_code" as any, { _company: cid });
+      const { appwrite: appwrite } = await import("@/integrations/appwrite/client");
+      const { data } = await appwrite.rpc("get_company_invite_code" as any, { _company: cid });
       return (data as string | null) ?? null;
     },
   });

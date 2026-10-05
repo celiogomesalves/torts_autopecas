@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { fetchProducts, fetchMovements, fetchSales, fetchPayables } from "@/lib/db";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import { Card } from "@/components/ui/card";
 import {
   Package,
@@ -54,7 +54,7 @@ function Dashboard() {
     queryKey: ["perm", "dashboard_valores", cid],
     enabled: !!cid,
     queryFn: async () => {
-      const { data, error } = await supabase.rpc("has_permission", {
+      const { data, error } = await appwrite.rpc("has_permission", {
         _company: cid,
         _module: "dashboard_valores",
         _action: "view",
@@ -90,7 +90,7 @@ function Dashboard() {
     queryKey: ["sales-month", cid, monthStartISO],
     enabled: !!cid,
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("sales")
         .select("id, total, created_at, status")
         .eq("company_id", cid)
@@ -110,7 +110,7 @@ function Dashboard() {
     queryFn: async () => {
       const ids = (monthSalesQ.data ?? []).map((s: any) => s.id);
       if (ids.length === 0) return [];
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("sale_items")
         .select("product_id, quantity, unit_price, sale_id")
         .in("sale_id", ids);

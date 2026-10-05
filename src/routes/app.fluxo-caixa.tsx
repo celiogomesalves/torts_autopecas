@@ -4,7 +4,7 @@ import { useMemo, useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
 import { fetchPayables, fetchSales } from "@/lib/db";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -45,7 +45,7 @@ function CashFlowPage() {
     queryKey: ["company-settings-start", cid],
     enabled: !!cid,
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("company_settings" as any)
         .select("cashflow_start_date")
         .eq("company_id", cid)

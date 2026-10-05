@@ -43,7 +43,7 @@ export function matchSearch(text: string | null | undefined, query: string): boo
 
 /**
  * Detecta erro de duplicidade (constraint UNIQUE) em qualquer fonte:
- * Postgres (23505), Supabase, mensagens textuais comuns.
+ * Postgres (23505), Appwrite, mensagens textuais comuns.
  */
 export function isDuplicateError(error: unknown): boolean {
   if (!error) return false;

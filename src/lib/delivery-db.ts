@@ -1,7 +1,7 @@
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import type { DeliveryBusinessHour, DeliveryFeeByKm } from "./db-types";
 
-const db = supabase as any;
+const db = appwrite as any;
 
 export async function fetchDeliveryBusinessHours(
   companyId: string,

@@ -1,8 +1,7 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAuth } from "@/lib/auth-context";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
-import type { User as SupabaseUser } from "@supabase/supabase-js";
+import { useAuth, type AppUser } from "@/lib/auth-context";
+import { appwrite } from "@/integrations/appwrite/client";
 import { useEffect } from "react";
 import { initScrollReveal } from "@/lib/scroll-reveal";
 import { toast } from "sonner";
@@ -146,7 +145,7 @@ interface SidebarContentProps {
   visibleNav: NavEntry[];
   isActive: (to: string, exact?: boolean) => boolean;
   setIsMobileOpen: (open: boolean) => void;
-  user: SupabaseUser | null;
+  user: AppUser | null;
   pendingCount: number;
   confirm: any;
   onLogout: () => void;
@@ -295,7 +294,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const deliveryOrdersQ = useQuery({
     queryKey: ["delivery-orders-count", currentCompanyId],
     queryFn: async () => {
-      const { count, error } = await supabase
+      const { count, error } = await appwrite
         .from("delivery_orders")
         .select("*", { count: "exact", head: true })
         .eq("company_id", currentCompanyId!)
@@ -320,7 +319,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!currentCompanyId) return;
 
-    const channel = supabase
+    const channel = appwrite
       .channel(`delivery-orders-changes-${currentCompanyId}`)
       .on(
         "postgres_changes",
@@ -356,7 +355,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      appwrite.removeChannel(channel);
     };
   }, [currentCompanyId, queryClient, navigate]);
 
@@ -365,7 +364,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     queryKey: ["my-membership", user?.id, currentCompanyId],
     enabled: !!user && !!currentCompanyId,
     queryFn: async () => {
-      const { data } = await supabase
+      const { data } = await appwrite
         .from("memberships")
         .select("role")
         .eq("user_id", user!.id)
@@ -386,7 +385,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const systemSettingsQ = useQuery({
     queryKey: ["systemSettings"],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data } = await appwrite
         .from("system_settings" as any)
         .select("*")
         .maybeSingle();
@@ -432,7 +431,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const myPermissionsQ = useQuery({
     queryKey: ["my-permissions-list", currentCompanyId, user?.id],
     queryFn: async () => {
-      const { data: member } = await supabase
+      const { data: member } = await appwrite
         .from("memberships")
         .select("role, custom_role_id")
         .eq("user_id", user!.id)
@@ -443,7 +442,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       if (member.role === "admin") return "all";
       if (!member.custom_role_id) return [];
 
-      const { data } = await supabase
+      const { data } = await appwrite
         .from("role_permissions")
         .select("module, can_view")
         .eq("role_id", member.custom_role_id);
@@ -501,7 +500,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [pathname]);
 
   const onLogout = async () => {
-    await supabase.auth.signOut();
+    await appwrite.auth.signOut();
     navigate({ to: "/login" });
   };
 

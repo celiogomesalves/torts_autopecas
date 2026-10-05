@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import { useAuth } from "@/lib/auth-context";
 import { toast } from "sonner";
 import { isSuperAdmin, logActivity } from "@/lib/db";
@@ -55,7 +55,7 @@ export function useCashRegister(targetUserId?: string) {
     queryKey: ["current-cash-register", cid, uid],
     queryFn: async () => {
       if (!cid || !uid) return null;
-      const { data, error } = await (supabase as any)
+      const { data, error } = await (appwrite as any)
         .from("cash_registers")
         .select("*")
         .eq("company_id", cid)
@@ -75,7 +75,7 @@ export function useCashRegister(targetUserId?: string) {
     queryKey: ["all-open-registers", cid],
     queryFn: async () => {
       if (!cid) return [];
-      const { data, error } = await (supabase as any)
+      const { data, error } = await (appwrite as any)
         .from("cash_registers")
         .select("*, profiles!user_id_open(name, email)")
         .eq("company_id", cid)
@@ -99,7 +99,7 @@ export function useCashRegister(targetUserId?: string) {
       }
 
       // Check if there's already an open register for this user
-      const { data: existing } = await (supabase as any)
+      const { data: existing } = await (appwrite as any)
         .from("cash_registers")
         .select("id")
         .eq("company_id", cid)
@@ -115,7 +115,7 @@ export function useCashRegister(targetUserId?: string) {
         }
       }
 
-      const { data, error } = await (supabase as any)
+      const { data, error } = await (appwrite as any)
         .from("cash_registers")
         .insert({
           company_id: cid,
@@ -161,7 +161,7 @@ export function useCashRegister(targetUserId?: string) {
       if (!currentRegisterQ.data) throw new Error("Nenhum caixa aberto.");
       if (currentRegisterQ.data.is_locked) throw new Error("Caixa bloqueado.");
 
-      const { data, error } = await (supabase as any)
+      const { data, error } = await (appwrite as any)
         .from("cash_transactions")
         .insert({
           company_id: cid,
@@ -198,7 +198,7 @@ export function useCashRegister(targetUserId?: string) {
   const lockRegisterMut = useMutation({
     mutationFn: async () => {
       if (!currentRegisterQ.data) throw new Error("Caixa não encontrado.");
-      const { error } = await (supabase as any)
+      const { error } = await (appwrite as any)
         .from("cash_registers")
         .update({
           is_locked: true,
@@ -233,14 +233,14 @@ export function useCashRegister(targetUserId?: string) {
       // If not provided, we assume the caller has already checked permissions (e.g. is manager/admin)
       if (password) {
         if (!user?.email) throw new Error("Email não encontrado.");
-        const { error: authError } = await supabase.auth.signInWithPassword({
+        const { error: authError } = await appwrite.auth.signInWithPassword({
           email: user.email,
           password: password,
         });
         if (authError) throw new Error("Senha incorreta.");
       }
 
-      const { error } = await (supabase as any)
+      const { error } = await (appwrite as any)
         .from("cash_registers")
         .update({
           is_locked: false,
@@ -276,7 +276,7 @@ export function useCashRegister(targetUserId?: string) {
         throw new Error("Caixa bloqueado. Desbloqueie primeiro.");
 
       // Calculate balance
-      const { data: txs, error: txError } = await (supabase as any)
+      const { data: txs, error: txError } = await (appwrite as any)
         .from("cash_transactions")
         .select("amount, type")
         .eq("cash_register_id", currentRegisterQ.data.id);
@@ -292,7 +292,7 @@ export function useCashRegister(targetUserId?: string) {
       const calculatedBalance = currentRegisterQ.data.initial_balance + totalIn - totalOut;
 
       // Close register
-      const { error: closeError } = await (supabase as any)
+      const { error: closeError } = await (appwrite as any)
         .from("cash_registers")
         .update({
           status: "CLOSED",
@@ -306,7 +306,7 @@ export function useCashRegister(targetUserId?: string) {
       if (closeError) throw closeError;
 
       // Save countings
-      await (supabase as any).from("cash_countings").insert({
+      await (appwrite as any).from("cash_countings").insert({
         company_id: cid,
         cash_register_id: currentRegisterQ.data.id,
         cash_amount: params.counts.cash,
@@ -338,7 +338,7 @@ export function useCashRegister(targetUserId?: string) {
       const targetId = id || currentRegisterQ.data?.id;
       if (!targetId) throw new Error("Caixa não encontrado.");
 
-      const { data: regData } = await (supabase as any)
+      const { data: regData } = await (appwrite as any)
         .from("cash_registers")
         .select("status, user_id_open, opened_at")
         .eq("id", targetId)
@@ -346,7 +346,7 @@ export function useCashRegister(targetUserId?: string) {
 
       if (!regData) throw new Error("Caixa não encontrado.");
 
-      const { count, error: txCountError } = await (supabase as any)
+      const { count, error: txCountError } = await (appwrite as any)
         .from("cash_transactions")
         .select("id", { count: "exact", head: true })
         .eq("cash_register_id", targetId);
@@ -357,7 +357,7 @@ export function useCashRegister(targetUserId?: string) {
         throw new Error("Não é possível excluir uma sessão que possui movimentações registradas.");
       }
 
-      const { count: saleCount, error: saleCountError } = await (supabase as any)
+      const { count: saleCount, error: saleCountError } = await (appwrite as any)
         .from("sales")
         .select("id", { count: "exact", head: true })
         .eq("company_id", cid)
@@ -372,7 +372,7 @@ export function useCashRegister(targetUserId?: string) {
         );
       }
 
-      const { error: deleteSalesError } = await (supabase as any)
+      const { error: deleteSalesError } = await (appwrite as any)
         .from("sales")
         .delete()
         .eq("company_id", cid)
@@ -382,7 +382,7 @@ export function useCashRegister(targetUserId?: string) {
 
       if (deleteSalesError) throw deleteSalesError;
 
-      const { error } = await (supabase as any).from("cash_registers").delete().eq("id", targetId);
+      const { error } = await (appwrite as any).from("cash_registers").delete().eq("id", targetId);
 
       if (error) throw error;
 

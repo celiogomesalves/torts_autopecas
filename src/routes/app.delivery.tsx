@@ -1,6 +1,6 @@
 import { PageHeading } from "@/components/page-header";
 import { createFileRoute } from "@tanstack/react-router";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import { useMemo, useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
@@ -121,7 +121,7 @@ function DeliveryPage() {
   const companyQ = useQuery({
     queryKey: ["company-detail", cid],
     queryFn: async () => {
-      const { data, error } = await (supabase.from("companies") as any)
+      const { data, error } = await (appwrite.from("companies") as any)
         .select("id, delivery_enabled, pickup_enabled, zip_code")
         .eq("id", cid)
         .single();
@@ -283,7 +283,7 @@ function DeliveryPage() {
           "Para habilitar o Delivery, você deve primeiro configurar o CEP da empresa nas configurações.",
         );
       }
-      const { error } = await supabase
+      const { error } = await appwrite
         .from("companies")
         .update({ delivery_enabled: enabled } as any)
         .eq("id", cid);
@@ -525,13 +525,13 @@ function DeliveryPage() {
         try {
           if (orderForm.sale_id) {
             // delete_sale já remove o delivery_order vinculado via ON DELETE CASCADE ou lógica no RPC
-            const { error: delErr } = await (supabase.rpc as any)("delete_sale", {
+            const { error: delErr } = await (appwrite.rpc as any)("delete_sale", {
               _sale_id: orderForm.sale_id,
             });
             if (delErr) throw delErr;
           } else {
             // Se não havia sale_id (improvável no novo fluxo), garantir exclusão do pedido
-            await supabase.from("delivery_orders").delete().eq("id", orderForm.id);
+            await appwrite.from("delivery_orders").delete().eq("id", orderForm.id);
           }
           toast.success("Pedido e venda vinculada excluídos com sucesso");
           setOrderOpen(false);
@@ -588,7 +588,7 @@ function DeliveryPage() {
       }
       // Se não houver venda vinculada, precisamos criar uma venda provisória para bloquear estoque
       else if (!payload.sale_id && payload.items && payload.items.length > 0) {
-        const { data: saleId, error: saleErr } = await (supabase.rpc as any)("register_sale", {
+        const { data: saleId, error: saleErr } = await (appwrite.rpc as any)("register_sale", {
           _company: cid,
           _customer: payload.customer_id || null,
           _items: payload.items,
@@ -616,7 +616,7 @@ function DeliveryPage() {
       if (o.status === "entregue" && nextStatus !== "entregue") {
         if (o.sale_id) {
           // Remover do financeiro
-          await supabase.from("payables").delete().eq("sale_id", o.sale_id);
+          await appwrite.from("payables").delete().eq("sale_id", o.sale_id);
           // Voltar venda para aguardando/concluída conforme necessário
           // Para delivery, se não está entregue, a venda pode ficar como "concluida" (estoque já baixou)
           // mas o financeiro só entra no "entregue".
@@ -627,10 +627,10 @@ function DeliveryPage() {
       if (nextStatus === "entregue") {
         if (o.sale_id) {
           // Garantir que a venda está concluída
-          await supabase.from("sales").update({ status: "concluida" }).eq("id", o.sale_id);
+          await appwrite.from("sales").update({ status: "concluida" }).eq("id", o.sale_id);
 
           // Criar entrada no financeiro
-          const { data: sale } = await supabase
+          const { data: sale } = await appwrite
             .from("sales")
             .select("*")
             .eq("id", o.sale_id)
@@ -638,8 +638,8 @@ function DeliveryPage() {
           if (sale) {
             const {
               data: { user },
-            } = await supabase.auth.getUser();
-            await supabase.from("payables").upsert(
+            } = await appwrite.auth.getUser();
+            await appwrite.from("payables").upsert(
               {
                 company_id: cid,
                 direction: "receber",
@@ -668,7 +668,7 @@ function DeliveryPage() {
       // Se sai de aguardando para preparo (Confirmação inicial)
       if (o.status === "aguardando_confirmacao" && nextStatus === "preparo") {
         if (o.sale_id) {
-          await supabase.from("sales").update({ status: "concluida" }).eq("id", o.sale_id);
+          await appwrite.from("sales").update({ status: "concluida" }).eq("id", o.sale_id);
         }
       }
 
@@ -709,17 +709,17 @@ function DeliveryPage() {
     try {
       if (o.sale_id) {
         // 1. Atualizar status da venda para cancelada
-        const { error: saleErr } = await supabase
+        const { error: saleErr } = await appwrite
           .from("sales")
           .update({ status: "cancelada" })
           .eq("id", o.sale_id);
         if (saleErr) throw saleErr;
 
         // 2. Remover do financeiro
-        await supabase.from("payables").delete().eq("sale_id", o.sale_id);
+        await appwrite.from("payables").delete().eq("sale_id", o.sale_id);
 
         // 3. Estornar estoque
-        const { data: items } = await supabase
+        const { data: items } = await appwrite
           .from("sale_items")
           .select("*")
           .eq("sale_id", o.sale_id);
@@ -727,8 +727,8 @@ function DeliveryPage() {
           for (const item of items) {
             const {
               data: { user },
-            } = await supabase.auth.getUser();
-            await supabase.from("stock_movements").insert({
+            } = await appwrite.auth.getUser();
+            await appwrite.from("stock_movements").insert({
               company_id: cid,
               product_id: item.product_id,
               type: "entrada",
@@ -758,7 +758,7 @@ function DeliveryPage() {
     ) {
       try {
         if (o.sale_id) {
-          const { error: delErr } = await (supabase.rpc as any)("delete_sale", {
+          const { error: delErr } = await (appwrite.rpc as any)("delete_sale", {
             _sale_id: o.sale_id,
           });
           if (delErr) throw delErr;

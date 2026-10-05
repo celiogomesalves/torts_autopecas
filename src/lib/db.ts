@@ -201,7 +201,7 @@ export async function fetchMyCompanies(userIdOrContext?: string | any): Promise<
   }
 
   if (!finalUserId) {
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user } } = await appwrite.auth.getUser();
     finalUserId = user?.id;
   }
   if (!finalUserId) return [];
@@ -671,7 +671,7 @@ export async function fetchProductsPaginated(params: {
     query = query.eq("stock", 0);
   } else if (params.status === "baixo") {
     query = query.lte("stock", db.raw("min_stock")); 
-    // Wait, supabase-js might not like db.raw directly in lte if it's a column.
+    // Wait, appwrite-js might not like db.raw directly in lte if it's a column.
     // Actually, we can use filter or rpc, but let's try a simpler approach if possible.
     // In postgrest, comparing columns: `stock=lte.min_stock`
     query = query.filter("stock", "lte", "min_stock"); // This is the correct way for column comparison in postgrest
@@ -1644,7 +1644,7 @@ export async function registerSale(input: {
   userId?: string;
   status?: "aberta" | "concluida";
 }): Promise<string> {
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { user } } = await appwrite.auth.getUser();
   const currentUserId = user?.id;
   const realCreatorId = input.userId || currentUserId;
 
@@ -1863,7 +1863,7 @@ export async function updateSaleItems(
   discount: number = 0,
   reason?: string
 ): Promise<void> {
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { user } } = await appwrite.auth.getUser();
 
   // Manual update of sale items
   // 1. Get old items to restore stock
@@ -1986,7 +1986,7 @@ export async function reopenSale(saleId: string): Promise<string> {
 }
 
 export async function cancelSale(saleId: string, reason?: string): Promise<string> {
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { user } } = await appwrite.auth.getUser();
 
   // 1. Obter detalhes da venda para o log
   const { data: sale } = await db.from("sales").select("*").eq("id", saleId).maybeSingle();
@@ -2064,7 +2064,7 @@ export async function cancelSale(saleId: string, reason?: string): Promise<strin
 // Apenas super admin: exclui a venda permanentemente, restaurando estoque e financeiro.
 // A regra é validada no banco (RPC delete_sale + RLS sales_delete_super_admin).
 export async function deleteSale(saleId: string): Promise<void> {
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { user } } = await appwrite.auth.getUser();
   const { data: sale } = await db.from("sales").select("company_id").eq("id", saleId).maybeSingle();
 
   const { error } = await db.rpc("delete_sale", { _sale_id: saleId });
@@ -2207,7 +2207,7 @@ export async function upsertPayable(
 }
 
 export async function markPayablePaid(id: string, companyId?: string) {
-  const { data: { user } } = await supabase.auth.getUser();
+  const { data: { user } } = await appwrite.auth.getUser();
   const userId = user?.id;
 
   const { data: payable, error: fetchErr } = await db

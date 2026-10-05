@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth-context";
 import { hasPermission } from "@/lib/db";
@@ -67,7 +67,7 @@ export function AdminAuthDialog({
     setIsLoading(true);
     try {
       // Re-autentica para verificar se a senha está correta e se o usuário tem permissão
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await appwrite.auth.signInWithPassword({
         email,
         password,
       });
@@ -84,7 +84,7 @@ export function AdminAuthDialog({
         }
       } else {
         // Fallback legado ou quando não há módulo: verifica se é admin/gerente
-        const { data: membership, error: memError } = await supabase
+        const { data: membership, error: memError } = await appwrite
           .from("memberships")
           .select("role")
           .eq("user_id", data.user.id)

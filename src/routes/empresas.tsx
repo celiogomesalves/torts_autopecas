@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import { fetchMyCompanies, createCompany, joinCompanyByCode } from "@/lib/db";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -72,7 +72,7 @@ function CompaniesPage() {
     try {
       const {
         data: { session },
-      } = await supabase.auth.getSession();
+      } = await appwrite.auth.getSession();
       if (session?.access_token) {
         console.log("Registrando acesso de rede para empresa:", companyId);
         const res = await fetch("/api/public/register-network-access", {
@@ -99,7 +99,7 @@ function CompaniesPage() {
   });
 
   const onLogout = async () => {
-    await supabase.auth.signOut();
+    await appwrite.auth.signOut();
     navigate({ to: "/login" });
   };
 

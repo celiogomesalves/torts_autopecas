@@ -1,4 +1,4 @@
-// Tipos manuais que espelham o schema Supabase.
+// Tipos manuais que espelham o schema Appwrite.
 // Substituir pelos tipos gerados (Database) após a migração ser aplicada.
 
 export type Role = "admin" | "gerente" | "vendedor" | "estoquista";

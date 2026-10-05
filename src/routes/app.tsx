@@ -1,7 +1,7 @@
 import { createFileRoute, Outlet, useNavigate, useLocation } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import { useAuth } from "@/lib/auth-context";
 import { AppShell } from "@/components/app-shell";
 import { fetchMyCompanies, isSuperAdmin, hasPermission } from "@/lib/db";
@@ -52,7 +52,7 @@ export const Route = createFileRoute("/app")({
     // Busca a sessão atual de forma rápida
     const {
       data: { session },
-    } = await supabase.auth.getSession();
+    } = await appwrite.auth.getSession();
     const userId = session?.user?.id;
 
     // Identifica o módulo atual para prefetch de permissões
@@ -72,7 +72,7 @@ export const Route = createFileRoute("/app")({
       queryClient.ensureQueryData({
         queryKey: ["systemSettings"],
         queryFn: async () => {
-          const { data } = await supabase
+          const { data } = await appwrite
             .from("system_settings" as any)
             .select("*")
             .maybeSingle();
@@ -83,7 +83,7 @@ export const Route = createFileRoute("/app")({
       queryClient.ensureQueryData({
         queryKey: ["branding"],
         queryFn: async () => {
-          const { data } = await supabase
+          const { data } = await appwrite
             .from("system_settings" as any)
             .select("brand_name, brand_logo_url")
             .maybeSingle();
@@ -163,7 +163,7 @@ function AppLayout() {
   const systemSettingsQ = useQuery({
     queryKey: ["systemSettings"],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data } = await appwrite
         .from("system_settings" as any)
         .select("*")
         .maybeSingle();
@@ -303,7 +303,7 @@ function AppLayout() {
             <Button
               variant="ghost"
               className="w-full text-muted-foreground"
-              onClick={() => supabase.auth.signOut()}
+              onClick={() => appwrite.auth.signOut()}
             >
               Sair da conta
             </Button>

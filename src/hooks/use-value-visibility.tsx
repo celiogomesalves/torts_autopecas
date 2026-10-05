@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth-context";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 
 const STORAGE_PREFIX = "ap.valuesHidden.";
 
@@ -22,7 +22,7 @@ export function useValueVisibility(module: string) {
     queryKey: ["has_permission", cid, module, "edit", user?.id],
     queryFn: async () => {
       if (!cid) return false;
-      const { data, error } = await supabase.rpc("has_permission", {
+      const { data, error } = await appwrite.rpc("has_permission", {
         _company: cid,
         _module: module,
         _action: "edit",

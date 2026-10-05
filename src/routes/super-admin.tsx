@@ -11,7 +11,7 @@ import {
   updateAppBaseUrl,
   clearN8nLogs,
 } from "@/lib/db";
-import { appwrite as supabase } from "@/integrations/appwrite/client";
+import { appwrite } from "@/integrations/appwrite/client";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -132,7 +132,7 @@ function SuperAdminPage() {
   const systemSettingsQ = useQuery({
     queryKey: ["systemSettings"],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("system_settings" as any)
         .select("*")
         .maybeSingle();
@@ -147,7 +147,7 @@ function SuperAdminPage() {
 
   const updateSettingsMut = useMutation({
     mutationFn: async (patch: any) => {
-      const { error } = await supabase
+      const { error } = await appwrite
         .from("system_settings" as any)
         .update({ ...patch, updated_at: new Date().toISOString(), updated_by: user?.id ?? null })
         .eq("id", true);
@@ -163,7 +163,7 @@ function SuperAdminPage() {
 
   const toggleAiLookupMut = useMutation({
     mutationFn: async (enabled: boolean) => {
-      const { error } = await supabase
+      const { error } = await appwrite
         .from("system_settings" as any)
         .update({
           ai_product_lookup_enabled: enabled,
@@ -702,7 +702,7 @@ function BrandingCard() {
   const brandingQ = useQuery({
     queryKey: ["branding-admin"],
     queryFn: async () => {
-      const { data } = await supabase
+      const { data } = await appwrite
         .from("system_settings" as any)
         .select("brand_name, brand_logo_url")
         .maybeSingle();
@@ -722,7 +722,7 @@ function BrandingCard() {
 
   const saveMut = useMutation({
     mutationFn: async (patch: { brand_name: string | null; brand_logo_url: string | null }) => {
-      const { error } = await supabase
+      const { error } = await appwrite
         .from("system_settings" as any)
         .update({ ...patch, updated_at: new Date().toISOString(), updated_by: user?.id ?? null })
         .eq("id", true);
@@ -741,12 +741,12 @@ function BrandingCard() {
       setUploading(true);
       const ext = file.name.split(".").pop() || "png";
       const path = `logo-${Date.now()}.${ext}`;
-      const { error: upErr } = await supabase.storage.from("branding").upload(path, file, {
+      const { error: upErr } = await appwrite.storage.from("branding").upload(path, file, {
         upsert: true,
         contentType: file.type,
       });
       if (upErr) throw upErr;
-      const { data } = supabase.storage.from("branding").getPublicUrl(path);
+      const { data } = appwrite.storage.from("branding").getPublicUrl(path);
       const url = data.publicUrl;
       setLogoUrl(url);
       await saveMut.mutateAsync({ brand_name: name || null, brand_logo_url: url });
@@ -1164,7 +1164,7 @@ function N8nLogsTab() {
   const logsQ = useQuery({
     queryKey: ["n8n-logs"],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await appwrite
         .from("activity_logs")
         .select("*")
         .eq("entity", "n8n_api")
