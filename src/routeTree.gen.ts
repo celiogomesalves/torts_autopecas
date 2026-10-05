@@ -9,64 +9,49 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as SuperAdminRouteImport } from './routes/super-admin'
-import { Route as SignupRouteImport } from './routes/signup'
-import { Route as LoginRouteImport } from './routes/login'
-import { Route as EmpresasRouteImport } from './routes/empresas'
-import { Route as AppRouteImport } from './routes/app'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AppRouteImport } from './routes/app'
+import { Route as EmpresasRouteImport } from './routes/empresas'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as SignupRouteImport } from './routes/signup'
+import { Route as SuperAdminRouteImport } from './routes/super-admin'
 import { Route as AppIndexRouteImport } from './routes/app.index'
-import { Route as AppVendasRouteImport } from './routes/app.vendas'
-import { Route as AppUnidadesRouteImport } from './routes/app.unidades'
-import { Route as AppRelatoriosRouteImport } from './routes/app.relatorios'
-import { Route as AppProdutosRouteImport } from './routes/app.produtos'
-import { Route as AppParceirosRouteImport } from './routes/app.parceiros'
-import { Route as AppNotasFiscaisRouteImport } from './routes/app.notas-fiscais'
-import { Route as AppMeuPerfilRouteImport } from './routes/app.meu-perfil'
-import { Route as AppMarcasRouteImport } from './routes/app.marcas'
-import { Route as AppLocalizacoesRouteImport } from './routes/app.localizacoes'
-import { Route as AppFormasPagamentoRouteImport } from './routes/app.formas-pagamento'
-import { Route as AppFluxoCaixaRouteImport } from './routes/app.fluxo-caixa'
-import { Route as AppFinanceiroRouteImport } from './routes/app.financeiro'
-import { Route as AppFechamentoCaixaRouteImport } from './routes/app.fechamento-caixa'
-import { Route as AppEstoqueRouteImport } from './routes/app.estoque'
-import { Route as AppEquipeRouteImport } from './routes/app.equipe'
-import { Route as AppDeliveryRouteImport } from './routes/app.delivery'
-import { Route as AppConfiguracoesRouteImport } from './routes/app.configuracoes'
-import { Route as AppConciliacaoRouteImport } from './routes/app.conciliacao'
 import { Route as AppCategoriasRouteImport } from './routes/app.categorias'
-import { Route as ApiPublicStockSearchRouteImport } from './routes/api/public/stock-search'
-import { Route as ApiPublicRegisterNetworkAccessRouteImport } from './routes/api/public/register-network-access'
-import { Route as ApiPublicNetworkCompaniesRouteImport } from './routes/api/public/network-companies'
-import { Route as ApiN8nSalesHandlerRouteImport } from './routes/api/n8n/sales-handler'
-import { Route as ApiN8nProductsQueryRouteImport } from './routes/api/n8n/products-query'
-import { Route as ApiN8nPartnersCreateRouteImport } from './routes/api/n8n/partners-create'
-import { Route as ApiN8nOrdersQueryRouteImport } from './routes/api/n8n/orders-query'
-import { Route as ApiN8nLogsQueryRouteImport } from './routes/api/n8n/logs-query'
-import { Route as ApiN8nClientsQueryRouteImport } from './routes/api/n8n/clients-query'
-import { Route as ApiFunctionsTestAiConnectionRouteImport } from './routes/api/functions/test-ai-connection'
-import { Route as ApiFunctionsSendPushRouteImport } from './routes/api/functions/send-push'
+import { Route as AppConciliacaoRouteImport } from './routes/app.conciliacao'
+import { Route as AppConfiguracoesRouteImport } from './routes/app.configuracoes'
+import { Route as AppDeliveryRouteImport } from './routes/app.delivery'
+import { Route as AppEquipeRouteImport } from './routes/app.equipe'
+import { Route as AppEstoqueRouteImport } from './routes/app.estoque'
+import { Route as AppFechamentoCaixaRouteImport } from './routes/app.fechamento-caixa'
+import { Route as AppFinanceiroRouteImport } from './routes/app.financeiro'
+import { Route as AppFluxoCaixaRouteImport } from './routes/app.fluxo-caixa'
+import { Route as AppFormasPagamentoRouteImport } from './routes/app.formas-pagamento'
+import { Route as AppLocalizacoesRouteImport } from './routes/app.localizacoes'
+import { Route as AppMarcasRouteImport } from './routes/app.marcas'
+import { Route as AppMeuPerfilRouteImport } from './routes/app.meu-perfil'
+import { Route as AppNotasFiscaisRouteImport } from './routes/app.notas-fiscais'
+import { Route as AppParceirosRouteImport } from './routes/app.parceiros'
+import { Route as AppProdutosRouteImport } from './routes/app.produtos'
+import { Route as AppRelatoriosRouteImport } from './routes/app.relatorios'
+import { Route as AppUnidadesRouteImport } from './routes/app.unidades'
+import { Route as AppVendasRouteImport } from './routes/app.vendas'
 import { Route as ApiFunctionsProductAiLookupRouteImport } from './routes/api/functions/product-ai-lookup'
+import { Route as ApiFunctionsSendPushRouteImport } from './routes/api/functions/send-push'
+import { Route as ApiFunctionsTestAiConnectionRouteImport } from './routes/api/functions/test-ai-connection'
+import { Route as ApiN8nClientsQueryRouteImport } from './routes/api/n8n/clients-query'
+import { Route as ApiN8nLogsQueryRouteImport } from './routes/api/n8n/logs-query'
+import { Route as ApiN8nOrdersQueryRouteImport } from './routes/api/n8n/orders-query'
+import { Route as ApiN8nPartnersCreateRouteImport } from './routes/api/n8n/partners-create'
+import { Route as ApiN8nProductsQueryRouteImport } from './routes/api/n8n/products-query'
+import { Route as ApiN8nSalesHandlerRouteImport } from './routes/api/n8n/sales-handler'
+import { Route as ApiPublicNetworkCompaniesRouteImport } from './routes/api/public/network-companies'
+import { Route as ApiPublicRegisterNetworkAccessRouteImport } from './routes/api/public/register-network-access'
+import { Route as ApiPublicStockSearchRouteImport } from './routes/api/public/stock-search'
 import { Route as ApiPublicHooksPurgeNetworkAccessRouteImport } from './routes/api/public/hooks/purge-network-access'
 
-const SuperAdminRoute = SuperAdminRouteImport.update({
-  id: '/super-admin',
-  path: '/super-admin',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SignupRoute = SignupRouteImport.update({
-  id: '/signup',
-  path: '/signup',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const EmpresasRoute = EmpresasRouteImport.update({
-  id: '/empresas',
-  path: '/empresas',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppRoute = AppRouteImport.update({
@@ -74,9 +59,24 @@ const AppRoute = AppRouteImport.update({
   path: '/app',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const EmpresasRoute = EmpresasRouteImport.update({
+  id: '/empresas',
+  path: '/empresas',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignupRoute = SignupRouteImport.update({
+  id: '/signup',
+  path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SuperAdminRoute = SuperAdminRouteImport.update({
+  id: '/super-admin',
+  path: '/super-admin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppIndexRoute = AppIndexRouteImport.update({
@@ -84,89 +84,9 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
-const AppVendasRoute = AppVendasRouteImport.update({
-  id: '/vendas',
-  path: '/vendas',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppUnidadesRoute = AppUnidadesRouteImport.update({
-  id: '/unidades',
-  path: '/unidades',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppRelatoriosRoute = AppRelatoriosRouteImport.update({
-  id: '/relatorios',
-  path: '/relatorios',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppProdutosRoute = AppProdutosRouteImport.update({
-  id: '/produtos',
-  path: '/produtos',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppParceirosRoute = AppParceirosRouteImport.update({
-  id: '/parceiros',
-  path: '/parceiros',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppNotasFiscaisRoute = AppNotasFiscaisRouteImport.update({
-  id: '/notas-fiscais',
-  path: '/notas-fiscais',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppMeuPerfilRoute = AppMeuPerfilRouteImport.update({
-  id: '/meu-perfil',
-  path: '/meu-perfil',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppMarcasRoute = AppMarcasRouteImport.update({
-  id: '/marcas',
-  path: '/marcas',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppLocalizacoesRoute = AppLocalizacoesRouteImport.update({
-  id: '/localizacoes',
-  path: '/localizacoes',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppFormasPagamentoRoute = AppFormasPagamentoRouteImport.update({
-  id: '/formas-pagamento',
-  path: '/formas-pagamento',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppFluxoCaixaRoute = AppFluxoCaixaRouteImport.update({
-  id: '/fluxo-caixa',
-  path: '/fluxo-caixa',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppFinanceiroRoute = AppFinanceiroRouteImport.update({
-  id: '/financeiro',
-  path: '/financeiro',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppFechamentoCaixaRoute = AppFechamentoCaixaRouteImport.update({
-  id: '/fechamento-caixa',
-  path: '/fechamento-caixa',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppEstoqueRoute = AppEstoqueRouteImport.update({
-  id: '/estoque',
-  path: '/estoque',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppEquipeRoute = AppEquipeRouteImport.update({
-  id: '/equipe',
-  path: '/equipe',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppDeliveryRoute = AppDeliveryRouteImport.update({
-  id: '/delivery',
-  path: '/delivery',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppConfiguracoesRoute = AppConfiguracoesRouteImport.update({
-  id: '/configuracoes',
-  path: '/configuracoes',
+const AppCategoriasRoute = AppCategoriasRouteImport.update({
+  id: '/categorias',
+  path: '/categorias',
   getParentRoute: () => AppRoute,
 } as any)
 const AppConciliacaoRoute = AppConciliacaoRouteImport.update({
@@ -174,56 +94,100 @@ const AppConciliacaoRoute = AppConciliacaoRouteImport.update({
   path: '/conciliacao',
   getParentRoute: () => AppRoute,
 } as any)
-const AppCategoriasRoute = AppCategoriasRouteImport.update({
-  id: '/categorias',
-  path: '/categorias',
+const AppConfiguracoesRoute = AppConfiguracoesRouteImport.update({
+  id: '/configuracoes',
+  path: '/configuracoes',
   getParentRoute: () => AppRoute,
 } as any)
-const ApiPublicStockSearchRoute = ApiPublicStockSearchRouteImport.update({
-  id: '/api/public/stock-search',
-  path: '/api/public/stock-search',
-  getParentRoute: () => rootRouteImport,
+const AppDeliveryRoute = AppDeliveryRouteImport.update({
+  id: '/delivery',
+  path: '/delivery',
+  getParentRoute: () => AppRoute,
 } as any)
-const ApiPublicRegisterNetworkAccessRoute =
-  ApiPublicRegisterNetworkAccessRouteImport.update({
-    id: '/api/public/register-network-access',
-    path: '/api/public/register-network-access',
+const AppEquipeRoute = AppEquipeRouteImport.update({
+  id: '/equipe',
+  path: '/equipe',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppEstoqueRoute = AppEstoqueRouteImport.update({
+  id: '/estoque',
+  path: '/estoque',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppFechamentoCaixaRoute = AppFechamentoCaixaRouteImport.update({
+  id: '/fechamento-caixa',
+  path: '/fechamento-caixa',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppFinanceiroRoute = AppFinanceiroRouteImport.update({
+  id: '/financeiro',
+  path: '/financeiro',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppFluxoCaixaRoute = AppFluxoCaixaRouteImport.update({
+  id: '/fluxo-caixa',
+  path: '/fluxo-caixa',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppFormasPagamentoRoute = AppFormasPagamentoRouteImport.update({
+  id: '/formas-pagamento',
+  path: '/formas-pagamento',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppLocalizacoesRoute = AppLocalizacoesRouteImport.update({
+  id: '/localizacoes',
+  path: '/localizacoes',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppMarcasRoute = AppMarcasRouteImport.update({
+  id: '/marcas',
+  path: '/marcas',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppMeuPerfilRoute = AppMeuPerfilRouteImport.update({
+  id: '/meu-perfil',
+  path: '/meu-perfil',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppNotasFiscaisRoute = AppNotasFiscaisRouteImport.update({
+  id: '/notas-fiscais',
+  path: '/notas-fiscais',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppParceirosRoute = AppParceirosRouteImport.update({
+  id: '/parceiros',
+  path: '/parceiros',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppProdutosRoute = AppProdutosRouteImport.update({
+  id: '/produtos',
+  path: '/produtos',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppRelatoriosRoute = AppRelatoriosRouteImport.update({
+  id: '/relatorios',
+  path: '/relatorios',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppUnidadesRoute = AppUnidadesRouteImport.update({
+  id: '/unidades',
+  path: '/unidades',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppVendasRoute = AppVendasRouteImport.update({
+  id: '/vendas',
+  path: '/vendas',
+  getParentRoute: () => AppRoute,
+} as any)
+const ApiFunctionsProductAiLookupRoute =
+  ApiFunctionsProductAiLookupRouteImport.update({
+    id: '/api/functions/product-ai-lookup',
+    path: '/api/functions/product-ai-lookup',
     getParentRoute: () => rootRouteImport,
   } as any)
-const ApiPublicNetworkCompaniesRoute =
-  ApiPublicNetworkCompaniesRouteImport.update({
-    id: '/api/public/network-companies',
-    path: '/api/public/network-companies',
-    getParentRoute: () => rootRouteImport,
-  } as any)
-const ApiN8nSalesHandlerRoute = ApiN8nSalesHandlerRouteImport.update({
-  id: '/api/n8n/sales-handler',
-  path: '/api/n8n/sales-handler',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiN8nProductsQueryRoute = ApiN8nProductsQueryRouteImport.update({
-  id: '/api/n8n/products-query',
-  path: '/api/n8n/products-query',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiN8nPartnersCreateRoute = ApiN8nPartnersCreateRouteImport.update({
-  id: '/api/n8n/partners-create',
-  path: '/api/n8n/partners-create',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiN8nOrdersQueryRoute = ApiN8nOrdersQueryRouteImport.update({
-  id: '/api/n8n/orders-query',
-  path: '/api/n8n/orders-query',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiN8nLogsQueryRoute = ApiN8nLogsQueryRouteImport.update({
-  id: '/api/n8n/logs-query',
-  path: '/api/n8n/logs-query',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiN8nClientsQueryRoute = ApiN8nClientsQueryRouteImport.update({
-  id: '/api/n8n/clients-query',
-  path: '/api/n8n/clients-query',
+const ApiFunctionsSendPushRoute = ApiFunctionsSendPushRouteImport.update({
+  id: '/api/functions/send-push',
+  path: '/api/functions/send-push',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiFunctionsTestAiConnectionRoute =
@@ -232,17 +196,53 @@ const ApiFunctionsTestAiConnectionRoute =
     path: '/api/functions/test-ai-connection',
     getParentRoute: () => rootRouteImport,
   } as any)
-const ApiFunctionsSendPushRoute = ApiFunctionsSendPushRouteImport.update({
-  id: '/api/functions/send-push',
-  path: '/api/functions/send-push',
+const ApiN8nClientsQueryRoute = ApiN8nClientsQueryRouteImport.update({
+  id: '/api/n8n/clients-query',
+  path: '/api/n8n/clients-query',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiFunctionsProductAiLookupRoute =
-  ApiFunctionsProductAiLookupRouteImport.update({
-    id: '/api/functions/product-ai-lookup',
-    path: '/api/functions/product-ai-lookup',
+const ApiN8nLogsQueryRoute = ApiN8nLogsQueryRouteImport.update({
+  id: '/api/n8n/logs-query',
+  path: '/api/n8n/logs-query',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiN8nOrdersQueryRoute = ApiN8nOrdersQueryRouteImport.update({
+  id: '/api/n8n/orders-query',
+  path: '/api/n8n/orders-query',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiN8nPartnersCreateRoute = ApiN8nPartnersCreateRouteImport.update({
+  id: '/api/n8n/partners-create',
+  path: '/api/n8n/partners-create',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiN8nProductsQueryRoute = ApiN8nProductsQueryRouteImport.update({
+  id: '/api/n8n/products-query',
+  path: '/api/n8n/products-query',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiN8nSalesHandlerRoute = ApiN8nSalesHandlerRouteImport.update({
+  id: '/api/n8n/sales-handler',
+  path: '/api/n8n/sales-handler',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicNetworkCompaniesRoute =
+  ApiPublicNetworkCompaniesRouteImport.update({
+    id: '/api/public/network-companies',
+    path: '/api/public/network-companies',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicRegisterNetworkAccessRoute =
+  ApiPublicRegisterNetworkAccessRouteImport.update({
+    id: '/api/public/register-network-access',
+    path: '/api/public/register-network-access',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiPublicStockSearchRoute = ApiPublicStockSearchRouteImport.update({
+  id: '/api/public/stock-search',
+  path: '/api/public/stock-search',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPublicHooksPurgeNetworkAccessRoute =
   ApiPublicHooksPurgeNetworkAccessRouteImport.update({
     id: '/api/public/hooks/purge-network-access',
@@ -522,32 +522,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/super-admin': {
-      id: '/super-admin'
-      path: '/super-admin'
-      fullPath: '/super-admin'
-      preLoaderRoute: typeof SuperAdminRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/signup': {
-      id: '/signup'
-      path: '/signup'
-      fullPath: '/signup'
-      preLoaderRoute: typeof SignupRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/empresas': {
-      id: '/empresas'
-      path: '/empresas'
-      fullPath: '/empresas'
-      preLoaderRoute: typeof EmpresasRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/app': {
@@ -557,11 +536,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/empresas': {
+      id: '/empresas'
+      path: '/empresas'
+      fullPath: '/empresas'
+      preLoaderRoute: typeof EmpresasRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/super-admin': {
+      id: '/super-admin'
+      path: '/super-admin'
+      fullPath: '/super-admin'
+      preLoaderRoute: typeof SuperAdminRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/app/': {
@@ -571,123 +571,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
-    '/app/vendas': {
-      id: '/app/vendas'
-      path: '/vendas'
-      fullPath: '/app/vendas'
-      preLoaderRoute: typeof AppVendasRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/unidades': {
-      id: '/app/unidades'
-      path: '/unidades'
-      fullPath: '/app/unidades'
-      preLoaderRoute: typeof AppUnidadesRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/relatorios': {
-      id: '/app/relatorios'
-      path: '/relatorios'
-      fullPath: '/app/relatorios'
-      preLoaderRoute: typeof AppRelatoriosRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/produtos': {
-      id: '/app/produtos'
-      path: '/produtos'
-      fullPath: '/app/produtos'
-      preLoaderRoute: typeof AppProdutosRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/parceiros': {
-      id: '/app/parceiros'
-      path: '/parceiros'
-      fullPath: '/app/parceiros'
-      preLoaderRoute: typeof AppParceirosRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/notas-fiscais': {
-      id: '/app/notas-fiscais'
-      path: '/notas-fiscais'
-      fullPath: '/app/notas-fiscais'
-      preLoaderRoute: typeof AppNotasFiscaisRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/meu-perfil': {
-      id: '/app/meu-perfil'
-      path: '/meu-perfil'
-      fullPath: '/app/meu-perfil'
-      preLoaderRoute: typeof AppMeuPerfilRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/marcas': {
-      id: '/app/marcas'
-      path: '/marcas'
-      fullPath: '/app/marcas'
-      preLoaderRoute: typeof AppMarcasRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/localizacoes': {
-      id: '/app/localizacoes'
-      path: '/localizacoes'
-      fullPath: '/app/localizacoes'
-      preLoaderRoute: typeof AppLocalizacoesRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/formas-pagamento': {
-      id: '/app/formas-pagamento'
-      path: '/formas-pagamento'
-      fullPath: '/app/formas-pagamento'
-      preLoaderRoute: typeof AppFormasPagamentoRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/fluxo-caixa': {
-      id: '/app/fluxo-caixa'
-      path: '/fluxo-caixa'
-      fullPath: '/app/fluxo-caixa'
-      preLoaderRoute: typeof AppFluxoCaixaRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/financeiro': {
-      id: '/app/financeiro'
-      path: '/financeiro'
-      fullPath: '/app/financeiro'
-      preLoaderRoute: typeof AppFinanceiroRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/fechamento-caixa': {
-      id: '/app/fechamento-caixa'
-      path: '/fechamento-caixa'
-      fullPath: '/app/fechamento-caixa'
-      preLoaderRoute: typeof AppFechamentoCaixaRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/estoque': {
-      id: '/app/estoque'
-      path: '/estoque'
-      fullPath: '/app/estoque'
-      preLoaderRoute: typeof AppEstoqueRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/equipe': {
-      id: '/app/equipe'
-      path: '/equipe'
-      fullPath: '/app/equipe'
-      preLoaderRoute: typeof AppEquipeRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/delivery': {
-      id: '/app/delivery'
-      path: '/delivery'
-      fullPath: '/app/delivery'
-      preLoaderRoute: typeof AppDeliveryRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/configuracoes': {
-      id: '/app/configuracoes'
-      path: '/configuracoes'
-      fullPath: '/app/configuracoes'
-      preLoaderRoute: typeof AppConfiguracoesRouteImport
+    '/app/categorias': {
+      id: '/app/categorias'
+      path: '/categorias'
+      fullPath: '/app/categorias'
+      preLoaderRoute: typeof AppCategoriasRouteImport
       parentRoute: typeof AppRoute
     }
     '/app/conciliacao': {
@@ -697,81 +585,130 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppConciliacaoRouteImport
       parentRoute: typeof AppRoute
     }
-    '/app/categorias': {
-      id: '/app/categorias'
-      path: '/categorias'
-      fullPath: '/app/categorias'
-      preLoaderRoute: typeof AppCategoriasRouteImport
+    '/app/configuracoes': {
+      id: '/app/configuracoes'
+      path: '/configuracoes'
+      fullPath: '/app/configuracoes'
+      preLoaderRoute: typeof AppConfiguracoesRouteImport
       parentRoute: typeof AppRoute
     }
-    '/api/public/stock-search': {
-      id: '/api/public/stock-search'
-      path: '/api/public/stock-search'
-      fullPath: '/api/public/stock-search'
-      preLoaderRoute: typeof ApiPublicStockSearchRouteImport
-      parentRoute: typeof rootRouteImport
+    '/app/delivery': {
+      id: '/app/delivery'
+      path: '/delivery'
+      fullPath: '/app/delivery'
+      preLoaderRoute: typeof AppDeliveryRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/api/public/register-network-access': {
-      id: '/api/public/register-network-access'
-      path: '/api/public/register-network-access'
-      fullPath: '/api/public/register-network-access'
-      preLoaderRoute: typeof ApiPublicRegisterNetworkAccessRouteImport
-      parentRoute: typeof rootRouteImport
+    '/app/equipe': {
+      id: '/app/equipe'
+      path: '/equipe'
+      fullPath: '/app/equipe'
+      preLoaderRoute: typeof AppEquipeRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/api/public/network-companies': {
-      id: '/api/public/network-companies'
-      path: '/api/public/network-companies'
-      fullPath: '/api/public/network-companies'
-      preLoaderRoute: typeof ApiPublicNetworkCompaniesRouteImport
-      parentRoute: typeof rootRouteImport
+    '/app/estoque': {
+      id: '/app/estoque'
+      path: '/estoque'
+      fullPath: '/app/estoque'
+      preLoaderRoute: typeof AppEstoqueRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/api/n8n/sales-handler': {
-      id: '/api/n8n/sales-handler'
-      path: '/api/n8n/sales-handler'
-      fullPath: '/api/n8n/sales-handler'
-      preLoaderRoute: typeof ApiN8nSalesHandlerRouteImport
-      parentRoute: typeof rootRouteImport
+    '/app/fechamento-caixa': {
+      id: '/app/fechamento-caixa'
+      path: '/fechamento-caixa'
+      fullPath: '/app/fechamento-caixa'
+      preLoaderRoute: typeof AppFechamentoCaixaRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/api/n8n/products-query': {
-      id: '/api/n8n/products-query'
-      path: '/api/n8n/products-query'
-      fullPath: '/api/n8n/products-query'
-      preLoaderRoute: typeof ApiN8nProductsQueryRouteImport
-      parentRoute: typeof rootRouteImport
+    '/app/financeiro': {
+      id: '/app/financeiro'
+      path: '/financeiro'
+      fullPath: '/app/financeiro'
+      preLoaderRoute: typeof AppFinanceiroRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/api/n8n/partners-create': {
-      id: '/api/n8n/partners-create'
-      path: '/api/n8n/partners-create'
-      fullPath: '/api/n8n/partners-create'
-      preLoaderRoute: typeof ApiN8nPartnersCreateRouteImport
-      parentRoute: typeof rootRouteImport
+    '/app/fluxo-caixa': {
+      id: '/app/fluxo-caixa'
+      path: '/fluxo-caixa'
+      fullPath: '/app/fluxo-caixa'
+      preLoaderRoute: typeof AppFluxoCaixaRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/api/n8n/orders-query': {
-      id: '/api/n8n/orders-query'
-      path: '/api/n8n/orders-query'
-      fullPath: '/api/n8n/orders-query'
-      preLoaderRoute: typeof ApiN8nOrdersQueryRouteImport
-      parentRoute: typeof rootRouteImport
+    '/app/formas-pagamento': {
+      id: '/app/formas-pagamento'
+      path: '/formas-pagamento'
+      fullPath: '/app/formas-pagamento'
+      preLoaderRoute: typeof AppFormasPagamentoRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/api/n8n/logs-query': {
-      id: '/api/n8n/logs-query'
-      path: '/api/n8n/logs-query'
-      fullPath: '/api/n8n/logs-query'
-      preLoaderRoute: typeof ApiN8nLogsQueryRouteImport
-      parentRoute: typeof rootRouteImport
+    '/app/localizacoes': {
+      id: '/app/localizacoes'
+      path: '/localizacoes'
+      fullPath: '/app/localizacoes'
+      preLoaderRoute: typeof AppLocalizacoesRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/api/n8n/clients-query': {
-      id: '/api/n8n/clients-query'
-      path: '/api/n8n/clients-query'
-      fullPath: '/api/n8n/clients-query'
-      preLoaderRoute: typeof ApiN8nClientsQueryRouteImport
-      parentRoute: typeof rootRouteImport
+    '/app/marcas': {
+      id: '/app/marcas'
+      path: '/marcas'
+      fullPath: '/app/marcas'
+      preLoaderRoute: typeof AppMarcasRouteImport
+      parentRoute: typeof AppRoute
     }
-    '/api/functions/test-ai-connection': {
-      id: '/api/functions/test-ai-connection'
-      path: '/api/functions/test-ai-connection'
-      fullPath: '/api/functions/test-ai-connection'
-      preLoaderRoute: typeof ApiFunctionsTestAiConnectionRouteImport
+    '/app/meu-perfil': {
+      id: '/app/meu-perfil'
+      path: '/meu-perfil'
+      fullPath: '/app/meu-perfil'
+      preLoaderRoute: typeof AppMeuPerfilRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/notas-fiscais': {
+      id: '/app/notas-fiscais'
+      path: '/notas-fiscais'
+      fullPath: '/app/notas-fiscais'
+      preLoaderRoute: typeof AppNotasFiscaisRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/parceiros': {
+      id: '/app/parceiros'
+      path: '/parceiros'
+      fullPath: '/app/parceiros'
+      preLoaderRoute: typeof AppParceirosRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/produtos': {
+      id: '/app/produtos'
+      path: '/produtos'
+      fullPath: '/app/produtos'
+      preLoaderRoute: typeof AppProdutosRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/relatorios': {
+      id: '/app/relatorios'
+      path: '/relatorios'
+      fullPath: '/app/relatorios'
+      preLoaderRoute: typeof AppRelatoriosRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/unidades': {
+      id: '/app/unidades'
+      path: '/unidades'
+      fullPath: '/app/unidades'
+      preLoaderRoute: typeof AppUnidadesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/vendas': {
+      id: '/app/vendas'
+      path: '/vendas'
+      fullPath: '/app/vendas'
+      preLoaderRoute: typeof AppVendasRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/api/functions/product-ai-lookup': {
+      id: '/api/functions/product-ai-lookup'
+      path: '/api/functions/product-ai-lookup'
+      fullPath: '/api/functions/product-ai-lookup'
+      preLoaderRoute: typeof ApiFunctionsProductAiLookupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/functions/send-push': {
@@ -781,11 +718,74 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFunctionsSendPushRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/functions/product-ai-lookup': {
-      id: '/api/functions/product-ai-lookup'
-      path: '/api/functions/product-ai-lookup'
-      fullPath: '/api/functions/product-ai-lookup'
-      preLoaderRoute: typeof ApiFunctionsProductAiLookupRouteImport
+    '/api/functions/test-ai-connection': {
+      id: '/api/functions/test-ai-connection'
+      path: '/api/functions/test-ai-connection'
+      fullPath: '/api/functions/test-ai-connection'
+      preLoaderRoute: typeof ApiFunctionsTestAiConnectionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/n8n/clients-query': {
+      id: '/api/n8n/clients-query'
+      path: '/api/n8n/clients-query'
+      fullPath: '/api/n8n/clients-query'
+      preLoaderRoute: typeof ApiN8nClientsQueryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/n8n/logs-query': {
+      id: '/api/n8n/logs-query'
+      path: '/api/n8n/logs-query'
+      fullPath: '/api/n8n/logs-query'
+      preLoaderRoute: typeof ApiN8nLogsQueryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/n8n/orders-query': {
+      id: '/api/n8n/orders-query'
+      path: '/api/n8n/orders-query'
+      fullPath: '/api/n8n/orders-query'
+      preLoaderRoute: typeof ApiN8nOrdersQueryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/n8n/partners-create': {
+      id: '/api/n8n/partners-create'
+      path: '/api/n8n/partners-create'
+      fullPath: '/api/n8n/partners-create'
+      preLoaderRoute: typeof ApiN8nPartnersCreateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/n8n/products-query': {
+      id: '/api/n8n/products-query'
+      path: '/api/n8n/products-query'
+      fullPath: '/api/n8n/products-query'
+      preLoaderRoute: typeof ApiN8nProductsQueryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/n8n/sales-handler': {
+      id: '/api/n8n/sales-handler'
+      path: '/api/n8n/sales-handler'
+      fullPath: '/api/n8n/sales-handler'
+      preLoaderRoute: typeof ApiN8nSalesHandlerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/network-companies': {
+      id: '/api/public/network-companies'
+      path: '/api/public/network-companies'
+      fullPath: '/api/public/network-companies'
+      preLoaderRoute: typeof ApiPublicNetworkCompaniesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/register-network-access': {
+      id: '/api/public/register-network-access'
+      path: '/api/public/register-network-access'
+      fullPath: '/api/public/register-network-access'
+      preLoaderRoute: typeof ApiPublicRegisterNetworkAccessRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/stock-search': {
+      id: '/api/public/stock-search'
+      path: '/api/public/stock-search'
+      fullPath: '/api/public/stock-search'
+      preLoaderRoute: typeof ApiPublicStockSearchRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/public/hooks/purge-network-access': {
