@@ -8,6 +8,12 @@ import { VitePWA } from "vite-plugin-pwa";
 import path from "node:path";
 
 export default defineConfig({
+  esbuild: {
+    jsxDev: false,
+  },
+  define: {
+    "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV || "production"),
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -16,7 +22,6 @@ export default defineConfig({
       "react",
       "react-dom",
       "react/jsx-runtime",
-      "react/jsx-dev-runtime",
       "@tanstack/react-query",
       "@tanstack/query-core",
     ],
