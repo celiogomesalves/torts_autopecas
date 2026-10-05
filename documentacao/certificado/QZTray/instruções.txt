@@ -1,0 +1,10 @@
+instalar o certificado no QZ Tray de cada máquina (uma vez só):
+
+Coloque em:
+
+Windows: C:\Program Files\QZ Tray\override.crt
+macOS: /Applications/QZ Tray.app/Contents/Resources/override.crt
+Linux: /opt/qz-tray/override.crt
+
+Reinicie o QZ Tray (bandeja → Exit → abrir de novo).
+
