@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { SmartPagination } from "@/components/smart-pagination";
 import { appwrite } from "@/integrations/appwrite/client";
+import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -76,6 +77,7 @@ export const Route = createFileRoute("/login")({
 function LoginPage() {
   const navigate = useNavigate();
   const branding = useBranding();
+  const { refreshUser } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -147,11 +149,13 @@ function LoginPage() {
     e.preventDefault();
     setBusy(true);
     const { error } = await appwrite.auth.signInWithPassword({ email, password });
-    setBusy(false);
     if (error) {
-      toast.error(error.message);
+      setBusy(false);
+      toast.error(error.message || "Erro ao realizar login");
       return;
     }
+    await refreshUser();
+    setBusy(false);
     toast.success("Bem-vindo de volta!");
     navigate({ to: "/empresas" });
   };

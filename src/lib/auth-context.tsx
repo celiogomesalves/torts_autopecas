@@ -22,6 +22,7 @@ interface AuthCtx {
   loading: boolean;
   currentCompanyId: string | null;
   setCurrentCompanyId: (id: string | null) => void;
+  refreshUser: () => Promise<AppUser | null>;
 }
 
 const AuthContext = createContext<AuthCtx | null>(null);
@@ -42,25 +43,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return null;
   });
 
-  useEffect(() => {
-    // Timeout de segurança
-    const safetyTimeout = setTimeout(() => {
-      setLoading(false);
-    }, 1000);
+  const refreshUser = async (): Promise<AppUser | null> => {
+    try {
+      const u = await account.get();
+      const mappedUser: AppUser = {
+        id: u.$id,
+        email: u.email,
+        name: u.name,
+        user_metadata: { name: u.name, full_name: u.name },
+      };
+      setSession({ user: mappedUser, $id: u.$id });
+      return mappedUser;
+    } catch {
+      setSession(null);
+      return null;
+    }
+  };
 
-    // Obter sessão atual do Appwrite
-    account
-      .get()
-      .then((u) => {
-        const mappedUser: AppUser = {
-          id: u.$id,
-          email: u.email,
-          name: u.name,
-          user_metadata: { name: u.name, full_name: u.name },
-        };
-        setSession({ user: mappedUser, $id: u.$id });
-      })
-      .catch(() => {
+  useEffect(() => {
+    // Escuta mudanças de auth em tempo real
+    const { data: sub } = appwrite.auth.onAuthStateChange((event, s) => {
+      if (event === "SIGNED_IN" && s?.user) {
+        setSession(s);
+        setLoading(false);
+      } else if (event === "SIGNED_OUT") {
         setSession(null);
         setCurrentCompanyIdState(null);
         try {
@@ -68,13 +74,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch {
           /* ignore */
         }
-      })
-      .finally(() => {
-        clearTimeout(safetyTimeout);
         setLoading(false);
-      });
+      }
+    });
+
+    // Timeout de segurança
+    const safetyTimeout = setTimeout(() => {
+      setLoading(false);
+    }, 1000);
+
+    // Obter sessão atual do Appwrite
+    refreshUser().finally(() => {
+      clearTimeout(safetyTimeout);
+      setLoading(false);
+    });
 
     return () => {
+      sub.subscription.unsubscribe();
       clearTimeout(safetyTimeout);
     };
   }, []);
@@ -97,6 +113,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loading,
         currentCompanyId,
         setCurrentCompanyId,
+        refreshUser,
       }}
     >
       {children}

@@ -508,6 +508,18 @@ async function handleRpc(name: string, args: any = {}): Promise<{ data: any; err
   }
 }
 
+const authListeners = new Set<(event: string, session: any) => void>();
+
+function notifyAuthListeners(event: string, session: any) {
+  authListeners.forEach((cb) => {
+    try {
+      cb(event, session);
+    } catch (e) {
+      console.error("[Appwrite AuthListener Error]:", e);
+    }
+  });
+}
+
 // Adaptador de Autenticação
 export const authAdapter = {
   signInWithPassword: async ({ email, password }: any) => {
@@ -520,13 +532,27 @@ export const authAdapter = {
       }
 
       const session = await account.createEmailPasswordSession(email, password);
-      const user = await account.get();
-      const mappedUser = {
-        ...user,
-        id: user.$id,
-        user_metadata: { name: user.name, full_name: user.name },
-      };
-      return { data: { session, user: mappedUser }, error: null };
+      let mappedUser: any = null;
+      try {
+        const user = await account.get();
+        mappedUser = {
+          ...user,
+          id: user.$id,
+          user_metadata: { name: user.name, full_name: user.name },
+        };
+      } catch {
+        mappedUser = {
+          id: (session as any).userId,
+          $id: (session as any).userId,
+          email: (session as any).providerUid || email,
+          name: email.split("@")[0],
+          user_metadata: { name: email.split("@")[0], full_name: email.split("@")[0] },
+        };
+      }
+
+      const sessionObj = { ...session, user: mappedUser };
+      notifyAuthListeners("SIGNED_IN", sessionObj);
+      return { data: { session: sessionObj, user: mappedUser }, error: null };
     } catch (err: any) {
       return { data: { session: null, user: null }, error: err };
     }
@@ -560,7 +586,9 @@ export const authAdapter = {
         id: user.$id,
         user_metadata: { name: user.name, full_name: user.name },
       };
-      return { data: { user: mappedUser, session }, error: null };
+      const sessionObj = session ? { ...session, user: mappedUser } : null;
+      if (sessionObj) notifyAuthListeners("SIGNED_IN", sessionObj);
+      return { data: { user: mappedUser, session: sessionObj }, error: null };
     } catch (err: any) {
       return { data: { user: null, session: null }, error: err };
     }
@@ -569,8 +597,10 @@ export const authAdapter = {
   signOut: async () => {
     try {
       await account.deleteSession("current");
+      notifyAuthListeners("SIGNED_OUT", null);
       return { error: null };
     } catch (err: any) {
+      notifyAuthListeners("SIGNED_OUT", null);
       return { error: err };
     }
   },
@@ -578,12 +608,25 @@ export const authAdapter = {
   getSession: async () => {
     try {
       const session = await account.getSession("current");
-      const user = await account.get();
-      const mappedUser = {
-        ...user,
-        id: user.$id,
-        user_metadata: { name: user.name, full_name: user.name },
-      };
+      let mappedUser: any = null;
+      try {
+        const user = await account.get();
+        mappedUser = {
+          ...user,
+          id: user.$id,
+          user_metadata: { name: user.name, full_name: user.name },
+        };
+      } catch {
+        if (session) {
+          mappedUser = {
+            id: (session as any).userId,
+            $id: (session as any).userId,
+            email: (session as any).providerUid || "",
+            name: ((session as any).providerUid || "").split("@")[0],
+            user_metadata: { name: ((session as any).providerUid || "").split("@")[0] },
+          };
+        }
+      }
       return { data: { session: { ...session, user: mappedUser } }, error: null };
     } catch (err: any) {
       return { data: { session: null }, error: null };
@@ -605,6 +648,8 @@ export const authAdapter = {
   },
 
   onAuthStateChange: (callback: (event: string, session: any) => void) => {
+    authListeners.add(callback);
+
     // Inicializa verificando sessao
     account
       .get()
@@ -614,7 +659,7 @@ export const authAdapter = {
           id: user.$id,
           user_metadata: { name: user.name, full_name: user.name },
         };
-        callback("SIGNED_IN", { user: mappedUser });
+        callback("SIGNED_IN", { user: mappedUser, $id: user.$id });
       })
       .catch(() => {
         callback("SIGNED_OUT", null);
@@ -623,7 +668,9 @@ export const authAdapter = {
     return {
       data: {
         subscription: {
-          unsubscribe: () => {},
+          unsubscribe: () => {
+            authListeners.delete(callback);
+          },
         },
       },
     };
