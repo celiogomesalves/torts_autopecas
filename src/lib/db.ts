@@ -201,23 +201,51 @@ export async function fetchMyCompanies(userIdOrContext?: string | any): Promise<
   }
 
   if (!finalUserId) {
-    const { data: { user } } = await appwrite.auth.getUser();
-    finalUserId = user?.id;
+    const { data } = await appwrite.auth.getUser();
+    finalUserId = data?.user?.id;
+  }
+  if (!finalUserId) {
+    const { data: sessionData } = await appwrite.auth.getSession();
+    finalUserId = sessionData?.session?.user?.id;
   }
   if (!finalUserId) return [];
 
-  const { data, error } = await db
+  // 1. Busca os memberships do usuário
+  const { data: memberships, error: mError } = await db
     .from("memberships")
-    .select("is_blocked, role, company:companies(*)")
+    .select("*")
     .eq("user_id", finalUserId);
 
-  if (error) throw error;
+  if (mError) throw mError;
+  if (!memberships || memberships.length === 0) return [];
 
-  return (data ?? []).map((m: any) => ({
-    ...m.company,
-    is_blocked: m.is_blocked,
-    role: m.role
-  }));
+  // 2. Extrai os IDs das empresas
+  const companyIds = memberships
+    .map((m: any) => m.company_id)
+    .filter(Boolean);
+
+  if (companyIds.length === 0) return [];
+
+  // 3. Busca os registros completos das empresas
+  const { data: companies, error: cError } = await db
+    .from("companies")
+    .select("*")
+    .in("id", companyIds);
+
+  if (cError) throw cError;
+
+  const companyMap = new Map((companies ?? []).map((c: any) => [c.id || c.$id, c]));
+
+  return memberships.map((m: any) => {
+    const company = companyMap.get(m.company_id) || {};
+    return {
+      ...company,
+      id: company.id || company.$id || m.company_id,
+      name: company.name || "Empresa",
+      is_blocked: m.is_blocked ?? false,
+      role: m.role || "vendedor",
+    };
+  });
 }
 
 export async function toggleMemberBlocked(membershipId: string, blocked: boolean): Promise<void> {
