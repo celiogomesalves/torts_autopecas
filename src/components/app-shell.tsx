@@ -319,43 +319,56 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!currentCompanyId) return;
 
-    const channel = appwrite
-      .channel(`delivery-orders-changes-${currentCompanyId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "delivery_orders",
-          filter: `company_id=eq.${currentCompanyId}`,
-        },
-        (payload) => {
-          // Sempre revalida o contador
-          queryClient.invalidateQueries({ queryKey: ["delivery-orders-count", currentCompanyId] });
+    let channel: any = null;
+    try {
+      if (typeof appwrite.channel === "function") {
+        channel = appwrite
+          .channel(`delivery-orders-changes-${currentCompanyId}`)
+          ?.on?.(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "delivery_orders",
+              filter: `company_id=eq.${currentCompanyId}`,
+            },
+            (payload: any) => {
+              // Sempre revalida o contador
+              queryClient.invalidateQueries({ queryKey: ["delivery-orders-count", currentCompanyId] });
 
-          const newRow = payload.new as any;
-          const oldRow = payload.old as any;
-          const isAwaiting = newRow && newRow.status === "aguardando_confirmacao";
-          const wasAwaiting = oldRow && oldRow.status === "aguardando_confirmacao";
+              const newRow = payload?.new as any;
+              const oldRow = payload?.old as any;
+              const isAwaiting = newRow && newRow.status === "aguardando_confirmacao";
+              const wasAwaiting = oldRow && oldRow.status === "aguardando_confirmacao";
 
-          // Dispara toast em INSERT aguardando OU UPDATE que entrou em aguardando
-          if (isAwaiting && !wasAwaiting) {
-            toast.info("Novo pedido Delivery!", {
-              description: `Pedido de ${newRow.customer_name || "Cliente"} aguardando confirmação.`,
-              duration: 10000,
-              icon: <Bell className="size-4" />,
-              action: {
-                label: "Ver pedidos",
-                onClick: () => navigate({ to: "/app/delivery" }),
-              },
-            });
-          }
-        },
-      )
-      .subscribe();
+              // Dispara toast em INSERT aguardando OU UPDATE que entrou em aguardando
+              if (isAwaiting && !wasAwaiting) {
+                toast.info("Novo pedido Delivery!", {
+                  description: `Pedido de ${newRow.customer_name || "Cliente"} aguardando confirmação.`,
+                  duration: 10000,
+                  icon: <Bell className="size-4" />,
+                  action: {
+                    label: "Ver pedidos",
+                    onClick: () => navigate({ to: "/app/delivery" }),
+                  },
+                });
+              }
+            },
+          )
+          ?.subscribe?.();
+      }
+    } catch {
+      // Ignora erro em realtime fallback
+    }
 
     return () => {
-      appwrite.removeChannel(channel);
+      try {
+        if (channel && typeof appwrite.removeChannel === "function") {
+          appwrite.removeChannel(channel);
+        }
+      } catch {
+        // Ignora
+      }
     };
   }, [currentCompanyId, queryClient, navigate]);
 

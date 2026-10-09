@@ -705,6 +705,46 @@ export const appwrite = {
       }
     },
   },
+  channel: (name: string) => {
+    let subUnsubscribe: (() => void) | null = null;
+    const channelObj = {
+      name,
+      on: (_type: string, filter: any, callback: (payload: any) => void) => {
+        try {
+          const col = filter?.table || "delivery_orders";
+          const channelName = `databases.${APPWRITE_DATABASE_ID}.collections.${col}.documents`;
+          subUnsubscribe = client.subscribe([channelName], (response: any) => {
+            const event = response.events?.[0] || "";
+            let eventType = "UPDATE";
+            if (event.includes(".create")) eventType = "INSERT";
+            else if (event.includes(".delete")) eventType = "DELETE";
+
+            callback({
+              eventType,
+              new: response.payload,
+              old: response.payload,
+            });
+          });
+        } catch {
+          // Ignora se websocket realtime nao puder conectar
+        }
+        return channelObj;
+      },
+      subscribe: () => channelObj,
+      unsubscribe: () => {
+        if (typeof subUnsubscribe === "function") {
+          subUnsubscribe();
+          subUnsubscribe = null;
+        }
+      },
+    };
+    return channelObj;
+  },
+  removeChannel: (channelObj: any) => {
+    if (channelObj && typeof channelObj.unsubscribe === "function") {
+      channelObj.unsubscribe();
+    }
+  },
 };
 
 // Alias exportado para facil transicao
