@@ -58,8 +58,10 @@ import {
   History,
   Terminal,
   Trash2,
+  Database,
 } from "lucide-react";
 import { toast } from "sonner";
+import { MigrationSyncTab } from "@/components/super-admin/migration-sync-tab";
 
 const SYSTEM_MODULES = [
   { id: "dashboard", name: "Dashboard", description: "Painel principal com indicadores" },
@@ -265,6 +267,13 @@ function SuperAdminPage() {
             >
               <Globe className="size-4 shrink-0" />
               <span>Sistema</span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="migration-sync"
+              className="flex items-center gap-1.5 py-2 px-2.5 sm:px-3 text-xs md:text-sm text-brand-orange data-[state=active]:text-brand-orange"
+            >
+              <Database className="size-4 shrink-0" />
+              <span>Sincronizar Supabase</span>
             </TabsTrigger>
           </TabsList>
 
@@ -567,6 +576,10 @@ function SuperAdminPage() {
           <TabsContent value="system" className="space-y-4">
             <BrandingCard />
             <SystemSettingsTab />
+          </TabsContent>
+
+          <TabsContent value="migration-sync" className="space-y-4">
+            <MigrationSyncTab />
           </TabsContent>
         </Tabs>
       </div>
