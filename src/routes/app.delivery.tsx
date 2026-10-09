@@ -1,6 +1,7 @@
+import { makePrefetchLoader } from "@/lib/route-prefetch";
 import { PageHeading } from "@/components/page-header";
 import { createFileRoute } from "@tanstack/react-router";
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 import { useMemo, useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
@@ -73,7 +74,13 @@ import {
   Edit2,
   ToggleRight,
   ToggleLeft,
+  Printer,
 } from "lucide-react";
+import {
+  printDeliveryOrder,
+  getDeliveryPrintSettings,
+  setDeliveryPrintSettings,
+} from "@/lib/print-delivery-order";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -92,6 +99,7 @@ import { matchSearch, cn } from "@/lib/utils";
 import { EntitySelectorDialog } from "@/components/entity-selector-dialog";
 
 export const Route = createFileRoute("/app/delivery")({
+  loader: makePrefetchLoader(["deliveryOrders", "drivers", "clients"]),
   component: DeliveryPage,
 });
 
@@ -113,7 +121,7 @@ const STATUS_VARIANT: Record<DeliveryStatus, "default" | "secondary" | "outline"
   };
 
 function DeliveryPage() {
-  const { currentCompanyId } = useAuth();
+  const { currentCompanyId, user } = useAuth();
   const cid = currentCompanyId ?? "";
   const qc = useQueryClient();
   const confirm = useConfirm();
@@ -121,7 +129,7 @@ function DeliveryPage() {
   const companyQ = useQuery({
     queryKey: ["company-detail", cid],
     queryFn: async () => {
-      const { data, error } = await (appwrite.from("companies") as any)
+      const { data, error } = await (supabase.from("companies") as any)
         .select("id, delivery_enabled, pickup_enabled, zip_code")
         .eq("id", cid)
         .single();
@@ -166,6 +174,32 @@ function DeliveryPage() {
     queryFn: () => fetchDeliveryFeesByKm(cid),
     enabled: !!cid,
   });
+  const paymentMethodsQ = useQuery({
+    queryKey: ["payment_methods", cid],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("payment_methods")
+        .select("id, name, active")
+        .eq("company_id", cid)
+        .eq("active", true)
+        .order("name");
+      return data ?? [];
+    },
+    enabled: !!cid,
+  });
+  const openRegistersQ = useQuery({
+    queryKey: ["open-registers", cid],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("cash_registers")
+        .select("id, user_id_open, opened_at, initial_balance")
+        .eq("company_id", cid)
+        .eq("status", "OPEN")
+        .order("opened_at", { ascending: false });
+      return data ?? [];
+    },
+    enabled: !!cid,
+  });
 
   const partners = partnersQ.data ?? [];
   const sales = salesQ.data ?? [];
@@ -174,9 +208,42 @@ function DeliveryPage() {
   const products = productsQ.data ?? [];
   const businessHours = hoursQ.data ?? [];
   const deliveryFees = feesQ.data ?? [];
+  const paymentMethods = paymentMethodsQ.data ?? [];
+  const openRegisters = (openRegistersQ.data ?? []) as any[];
+
+  const openRegisterUserIds = Array.from(
+    new Set(openRegisters.map((r: any) => r.user_id_open).filter(Boolean)),
+  );
+  const registerProfilesQ = useQuery({
+    queryKey: ["register-profiles", openRegisterUserIds.sort().join(",")],
+    queryFn: async () => {
+      if (openRegisterUserIds.length === 0) return [];
+      const { data } = await supabase
+        .from("profiles")
+        .select("id, name, email")
+        .in("id", openRegisterUserIds);
+      return data ?? [];
+    },
+    enabled: openRegisterUserIds.length > 0,
+  });
+  const registerProfiles = registerProfilesQ.data ?? [];
+  const profileLabel = (uid: string | null | undefined) => {
+    if (!uid) return "—";
+    const p: any = registerProfiles.find((x: any) => x.id === uid);
+    return p?.name || p?.email || uid.slice(0, 8);
+  };
   const company = companyQ.data;
   const isDeliveryEnabled = (company as any)?.delivery_enabled ?? true;
   const isPickupEnabled = (company as any)?.pickup_enabled ?? true;
+
+  // Pedidos de Retirada não passam por "Em rota"
+  const isRetirada = (o: DeliveryOrder) =>
+    !o.driver_id && /^retirada/i.test(o.address || "");
+  const allowedStatusesFor = (o: DeliveryOrder): DeliveryStatus[] =>
+    isRetirada(o)
+      ? ["aguardando_confirmacao", "preparo", "entregue", "cancelado"]
+      : ["aguardando_confirmacao", "preparo", "rota", "entregue", "cancelado"];
+
 
   // Driver mutations
   const driverMut = useMutation({
@@ -274,6 +341,46 @@ function DeliveryPage() {
   const [feeForm, setFeeForm] = useState<Partial<import("@/lib/db-types").DeliveryFeeByKm>>({});
   const [hoursDialogOpen, setHoursDialogOpen] = useState(false);
   const [lastManualAddress, setLastManualAddress] = useState("");
+  const [autoPrintNew, setAutoPrintNew] = useState<boolean>(
+    () => !!getDeliveryPrintSettings(cid).autoPrintNew,
+  );
+
+  const toggleAutoPrint = () => {
+    const next = !autoPrintNew;
+    setAutoPrintNew(next);
+    setDeliveryPrintSettings(cid, { ...getDeliveryPrintSettings(cid), autoPrintNew: next });
+    toast.success(
+      next
+        ? "Impressão automática ativada para novos pedidos."
+        : "Impressão automática desativada.",
+    );
+  };
+
+  // Realtime: imprime automaticamente quando um novo pedido é criado.
+  useEffect(() => {
+    if (!cid || !autoPrintNew) return;
+    const channel = supabase
+      .channel(`delivery-orders-print-${cid}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "delivery_orders", filter: `company_id=eq.${cid}` },
+        (payload) => {
+          const o = payload.new as DeliveryOrder;
+          // Aguarda um instante para garantir sale_items gravados antes de imprimir.
+          setTimeout(() => {
+            printDeliveryOrder(cid, o).catch((e) =>
+              console.error("[auto-print delivery] falhou", e),
+            );
+          }, 800);
+          qc.invalidateQueries({ queryKey: ["delivery-orders", cid] });
+        },
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [cid, autoPrintNew, qc]);
+
 
   // Driver dialog
   const toggleDeliveryMut = useMutation({
@@ -283,7 +390,27 @@ function DeliveryPage() {
           "Para habilitar o Delivery, você deve primeiro configurar o CEP da empresa nas configurações.",
         );
       }
-      const { error } = await appwrite
+      if (enabled) {
+        const now = new Date();
+        const today = now.getDay();
+        const todayHour = businessHours.find((h) => h.day_of_week === today);
+        if (!todayHour || todayHour.is_closed || !todayHour.open_time || !todayHour.close_time) {
+          throw new Error(
+            "Não é possível habilitar a entrega: o dia de hoje está marcado como fechado nos horários de funcionamento.",
+          );
+        }
+        const currentMinutes = now.getHours() * 60 + now.getMinutes();
+        const [oh, om] = todayHour.open_time.split(":").map(Number);
+        const [ch, cm] = todayHour.close_time.split(":").map(Number);
+        const openMinutes = oh * 60 + (om || 0);
+        const closeMinutes = ch * 60 + (cm || 0);
+        if (currentMinutes < openMinutes || currentMinutes >= closeMinutes) {
+          throw new Error(
+            `Não é possível habilitar a entrega: fora do horário de funcionamento de hoje (${todayHour.open_time.slice(0, 5)} - ${todayHour.close_time.slice(0, 5)}).`,
+          );
+        }
+      }
+      const { error } = await supabase
         .from("companies")
         .update({ delivery_enabled: enabled } as any)
         .eq("id", cid);
@@ -460,6 +587,29 @@ function DeliveryPage() {
   });
   const [viewOnly, setViewOnly] = useState(false);
 
+  // Dialog de finalização ("Entregue"): exige forma de pagamento + caixa.
+  const [finalizeOrder, setFinalizeOrder] = useState<DeliveryOrder | null>(null);
+  const [finalizePayment, setFinalizePayment] = useState<string>("");
+  const [finalizeRegisterId, setFinalizeRegisterId] = useState<string>("");
+  const [finalizing, setFinalizing] = useState(false);
+
+  const openFinalize = (o: DeliveryOrder) => {
+    setFinalizeOrder(o);
+    const myReg = openRegisters.find((r: any) => r.user_id_open === user?.id);
+    setFinalizeRegisterId(myReg?.id ?? openRegisters[0]?.id ?? "");
+    // Auto-detecta forma de pagamento informada pelo cliente (n8n)
+    const orderPay = String((o as any)?.payment_method ?? "").trim();
+    if (orderPay) {
+      const match = paymentMethods.find(
+        (m: any) => String(m.name).toLowerCase() === orderPay.toLowerCase(),
+      );
+      setFinalizePayment(match?.name ?? orderPay);
+    } else {
+      setFinalizePayment("");
+    }
+  };
+
+
   const partnerAddressesQ = useQuery({
     queryKey: ["partner-addresses", cid, orderForm?.customer_id],
     queryFn: () => fetchPartnerAddresses(cid, orderForm?.customer_id!),
@@ -525,13 +675,13 @@ function DeliveryPage() {
         try {
           if (orderForm.sale_id) {
             // delete_sale já remove o delivery_order vinculado via ON DELETE CASCADE ou lógica no RPC
-            const { error: delErr } = await (appwrite.rpc as any)("delete_sale", {
+            const { error: delErr } = await (supabase.rpc as any)("delete_sale", {
               _sale_id: orderForm.sale_id,
             });
             if (delErr) throw delErr;
           } else {
             // Se não havia sale_id (improvável no novo fluxo), garantir exclusão do pedido
-            await appwrite.from("delivery_orders").delete().eq("id", orderForm.id);
+            await supabase.from("delivery_orders").delete().eq("id", orderForm.id);
           }
           toast.success("Pedido e venda vinculada excluídos com sucesso");
           setOrderOpen(false);
@@ -588,7 +738,7 @@ function DeliveryPage() {
       }
       // Se não houver venda vinculada, precisamos criar uma venda provisória para bloquear estoque
       else if (!payload.sale_id && payload.items && payload.items.length > 0) {
-        const { data: saleId, error: saleErr } = await (appwrite.rpc as any)("register_sale", {
+        const { data: saleId, error: saleErr } = await (supabase.rpc as any)("register_sale", {
           _company: cid,
           _customer: payload.customer_id || null,
           _items: payload.items,
@@ -599,7 +749,14 @@ function DeliveryPage() {
         });
 
         if (saleErr) throw saleErr;
-        if (saleId) payload.sale_id = String(saleId);
+        if (saleId) {
+          payload.sale_id = String(saleId);
+          // Marca venda como originada do delivery (aparece no histórico de todos)
+          await supabase
+            .from("sales")
+            .update({ origin: "delivery" } as any)
+            .eq("id", String(saleId));
+        }
       }
 
       orderMut.mutate(payload);
@@ -609,54 +766,28 @@ function DeliveryPage() {
   };
 
   const updateStatus = async (o: DeliveryOrder, nextStatus: DeliveryStatus) => {
+    // Retirada não usa "Em rota"
+    if (nextStatus === "rota" && isRetirada(o)) {
+      toast.error('"Em rota" é apenas para pedidos de Entrega.');
+      return;
+    }
+    // Finalização: abrir diálogo para confirmar pagamento + caixa
+    if (nextStatus === "entregue" && o.status !== "entregue") {
+      openFinalize(o);
+      return;
+    }
     try {
-      // Regras financeiras e de estoque ao mudar status
-
-      // Se estava entregue e vai para qualquer outro (Reabertura)
+      // Reabertura: sair de "entregue" sempre volta para "preparo" e reverte financeiro
       if (o.status === "entregue" && nextStatus !== "entregue") {
         if (o.sale_id) {
-          // Remover do financeiro
-          await appwrite.from("payables").delete().eq("sale_id", o.sale_id);
-          // Voltar venda para aguardando/concluída conforme necessário
-          // Para delivery, se não está entregue, a venda pode ficar como "concluida" (estoque já baixou)
-          // mas o financeiro só entra no "entregue".
+          await supabase.from("payables").delete().eq("sale_id", o.sale_id);
+          await supabase.from("sale_payments").delete().eq("sale_id", o.sale_id);
+          await supabase.from("cash_transactions").delete().eq("reference_id", o.sale_id);
         }
+        nextStatus = "preparo";
       }
 
-      // Se vai para Entregue (Finalizado)
-      if (nextStatus === "entregue") {
-        if (o.sale_id) {
-          // Garantir que a venda está concluída
-          await appwrite.from("sales").update({ status: "concluida" }).eq("id", o.sale_id);
 
-          // Criar entrada no financeiro
-          const { data: sale } = await appwrite
-            .from("sales")
-            .select("*")
-            .eq("id", o.sale_id)
-            .single();
-          if (sale) {
-            const {
-              data: { user },
-            } = await appwrite.auth.getUser();
-            await appwrite.from("payables").upsert(
-              {
-                company_id: cid,
-                direction: "receber",
-                partner_id: sale.customer_id,
-                sale_id: sale.id,
-                description: `Venda Delivery #${o.id} (Venda #${sale.number})`,
-                amount: sale.total,
-                due_date: new Date().toISOString().slice(0, 10),
-                status: "pago", // Delivery finalizado = Pago
-                payment_method: sale.payment_method || "outros",
-                created_by: user?.id,
-              },
-              { onConflict: "sale_id" },
-            );
-          }
-        }
-      }
 
       // Se vai para Cancelado
       if (nextStatus === "cancelado") {
@@ -668,7 +799,7 @@ function DeliveryPage() {
       // Se sai de aguardando para preparo (Confirmação inicial)
       if (o.status === "aguardando_confirmacao" && nextStatus === "preparo") {
         if (o.sale_id) {
-          await appwrite.from("sales").update({ status: "concluida" }).eq("id", o.sale_id);
+          await supabase.from("sales").update({ status: "concluida" }).eq("id", o.sale_id);
         }
       }
 
@@ -679,7 +810,9 @@ function DeliveryPage() {
   };
 
   const advanceStatus = (o: DeliveryOrder) => {
-    const flow: DeliveryStatus[] = ["aguardando_confirmacao", "preparo", "rota", "entregue"];
+    const flow: DeliveryStatus[] = isRetirada(o)
+      ? ["aguardando_confirmacao", "preparo", "entregue"]
+      : ["aguardando_confirmacao", "preparo", "rota", "entregue"];
     const idx = flow.indexOf(o.status);
     if (idx < flow.length - 1) {
       updateStatus(o, flow[idx + 1]);
@@ -687,12 +820,101 @@ function DeliveryPage() {
   };
 
   const regressStatus = (o: DeliveryOrder) => {
-    const flow: DeliveryStatus[] = ["aguardando_confirmacao", "preparo", "rota", "entregue"];
+    const flow: DeliveryStatus[] = isRetirada(o)
+      ? ["aguardando_confirmacao", "preparo", "entregue"]
+      : ["aguardando_confirmacao", "preparo", "rota", "entregue"];
     const idx = flow.indexOf(o.status);
     if (idx > 0) {
       updateStatus(o, flow[idx - 1]);
     }
   };
+
+  const submitFinalize = async () => {
+    if (!finalizeOrder) return;
+    if (!finalizePayment) {
+      toast.error("Selecione a forma de pagamento");
+      return;
+    }
+    if (!finalizeRegisterId) {
+      toast.error("Selecione o caixa onde a venda será registrada");
+      return;
+    }
+    if (!openRegisters.some((r: any) => r.id === finalizeRegisterId)) {
+      toast.error("O caixa selecionado não está aberto para este operador");
+      return;
+    }
+    const o = finalizeOrder;
+    setFinalizing(true);
+    try {
+      if (o.sale_id) {
+        const { error: upErr } = await supabase
+          .from("sales")
+          .update({
+            status: "concluida",
+            payment_method: finalizePayment,
+            cash_register_id: finalizeRegisterId,
+            origin: "delivery",
+          } as any)
+          .eq("id", o.sale_id);
+        if (upErr) throw upErr;
+
+        // sale_payments (idempotente: limpa antes)
+        await supabase.from("sale_payments").delete().eq("sale_id", o.sale_id);
+        await supabase.from("sale_payments").insert({
+          company_id: cid,
+          sale_id: o.sale_id,
+          method: finalizePayment,
+          amount: Number(o.total),
+        } as any);
+
+        // cash_transactions (idempotente)
+        await supabase
+          .from("cash_transactions")
+          .delete()
+          .eq("reference_id", o.sale_id)
+          .eq("category", "SALE");
+        await supabase.from("cash_transactions").insert({
+          company_id: cid,
+          cash_register_id: finalizeRegisterId,
+          type: "IN",
+          category: "SALE",
+          amount: Number(o.total),
+          payment_method: finalizePayment,
+          description: `Delivery #${String(o.id).slice(0, 6)}${o.sale_number ? ` (Venda #${o.sale_number})` : ""}`,
+          reference_id: o.sale_id,
+          user_id: user?.id,
+        } as any);
+
+        // Conta a receber (pago)
+        await supabase.from("payables").upsert(
+          {
+            company_id: cid,
+            direction: "receber",
+            partner_id: o.customer_id,
+            sale_id: o.sale_id,
+            description: `Venda Delivery${o.sale_number ? ` #${o.sale_number}` : ""}`,
+            amount: o.total,
+            due_date: new Date().toISOString().slice(0, 10),
+            status: "pago",
+            payment_method: finalizePayment,
+            created_by: user?.id,
+          },
+          { onConflict: "sale_id" },
+        );
+      }
+      orderMut.mutate({ ...o, status: "entregue" });
+      setFinalizeOrder(null);
+      qc.invalidateQueries({ queryKey: ["sales-paginated"] });
+      qc.invalidateQueries({ queryKey: ["payables", cid] });
+      qc.invalidateQueries({ queryKey: ["cash-transactions"] });
+      toast.success("Pedido finalizado e venda registrada");
+    } catch (e: any) {
+      toast.error("Erro ao finalizar: " + e.message);
+    } finally {
+      setFinalizing(false);
+    }
+  };
+
 
   const cancelOrder = async (o: DeliveryOrder) => {
     if (o.status === "aguardando_confirmacao") {
@@ -709,17 +931,17 @@ function DeliveryPage() {
     try {
       if (o.sale_id) {
         // 1. Atualizar status da venda para cancelada
-        const { error: saleErr } = await appwrite
+        const { error: saleErr } = await supabase
           .from("sales")
           .update({ status: "cancelada" })
           .eq("id", o.sale_id);
         if (saleErr) throw saleErr;
 
         // 2. Remover do financeiro
-        await appwrite.from("payables").delete().eq("sale_id", o.sale_id);
+        await supabase.from("payables").delete().eq("sale_id", o.sale_id);
 
         // 3. Estornar estoque
-        const { data: items } = await appwrite
+        const { data: items } = await supabase
           .from("sale_items")
           .select("*")
           .eq("sale_id", o.sale_id);
@@ -727,8 +949,8 @@ function DeliveryPage() {
           for (const item of items) {
             const {
               data: { user },
-            } = await appwrite.auth.getUser();
-            await appwrite.from("stock_movements").insert({
+            } = await supabase.auth.getUser();
+            await supabase.from("stock_movements").insert({
               company_id: cid,
               product_id: item.product_id,
               type: "entrada",
@@ -758,7 +980,7 @@ function DeliveryPage() {
     ) {
       try {
         if (o.sale_id) {
-          const { error: delErr } = await (appwrite.rpc as any)("delete_sale", {
+          const { error: delErr } = await (supabase.rpc as any)("delete_sale", {
             _sale_id: o.sale_id,
           });
           if (delErr) throw delErr;
@@ -858,6 +1080,58 @@ function DeliveryPage() {
 
   const driverName = (id?: string | null) => drivers.find((d) => d.id === id)?.name ?? "—";
 
+  const operatingStatus = useMemo(() => {
+    const DAY_NAMES = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
+    const toMin = (t?: string) => {
+      if (!t) return null;
+      const [h, m] = t.split(":").map(Number);
+      return h * 60 + (m || 0);
+    };
+    const fmt = (t: string) => t.slice(0, 5);
+    const now = new Date();
+    const today = now.getDay();
+    const currentMin = now.getHours() * 60 + now.getMinutes();
+    const todayHour = businessHours.find((h) => h.day_of_week === today);
+    const openMin = toMin(todayHour?.open_time);
+    const closeMin = toMin(todayHour?.close_time);
+    const isOpenNow =
+      !!todayHour &&
+      !todayHour.is_closed &&
+      openMin !== null &&
+      closeMin !== null &&
+      currentMin >= openMin &&
+      currentMin < closeMin;
+
+    let nextLabel = "";
+    if (isOpenNow && todayHour) {
+      nextLabel = `Fecha às ${fmt(todayHour.close_time)}`;
+    } else {
+      if (
+        todayHour &&
+        !todayHour.is_closed &&
+        openMin !== null &&
+        currentMin < openMin
+      ) {
+        nextLabel = `Abre hoje às ${fmt(todayHour.open_time)}`;
+      } else {
+        for (let i = 1; i <= 7; i++) {
+          const d = (today + i) % 7;
+          const h = businessHours.find((x) => x.day_of_week === d);
+          if (h && !h.is_closed && h.open_time && h.close_time) {
+            nextLabel =
+              i === 1
+                ? `Abre amanhã às ${fmt(h.open_time)}`
+                : `Abre ${DAY_NAMES[d]} às ${fmt(h.open_time)}`;
+            break;
+          }
+        }
+        if (!nextLabel) nextLabel = "Nenhum horário configurado";
+      }
+    }
+    return { isOpenNow, nextLabel };
+  }, [businessHours]);
+
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -866,7 +1140,27 @@ function DeliveryPage() {
           title="Delivery"
           subtitle="Gestão de entregas, entregadores e roteirização básica."
         />
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center flex-wrap">
+          <div
+            className={cn(
+              "flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm",
+              operatingStatus.isOpenNow
+                ? "bg-green-50 border-green-200 text-green-800 dark:bg-green-950 dark:border-green-900 dark:text-green-300"
+                : "bg-muted border-border text-muted-foreground",
+            )}
+            title={operatingStatus.nextLabel}
+          >
+            <span
+              className={cn(
+                "size-2 rounded-full",
+                operatingStatus.isOpenNow ? "bg-green-500" : "bg-muted-foreground",
+              )}
+            />
+            <span className="font-medium">
+              {operatingStatus.isOpenNow ? "Aberto" : "Fechado"}
+            </span>
+            <span className="text-xs opacity-80">· {operatingStatus.nextLabel}</span>
+          </div>
           <Button
             variant={isDeliveryEnabled ? "default" : "outline"}
             size="sm"
@@ -900,6 +1194,17 @@ function DeliveryPage() {
               <MapPin className="size-4 mr-2" /> Taxas por KM
             </Button>
           )}
+          <Button
+            variant={autoPrintNew ? "default" : "outline"}
+            size="sm"
+            onClick={toggleAutoPrint}
+            className={cn("gap-2", autoPrintNew ? "bg-brand-orange hover:bg-brand-orange/90 text-white" : "")}
+            title="Imprimir cupom automaticamente quando um novo pedido for registrado"
+          >
+            <Printer className="size-4" />
+            {autoPrintNew ? "Auto-impressão ON" : "Auto-impressão OFF"}
+          </Button>
+
         </div>
       </div>
 
@@ -1635,6 +1940,15 @@ function DeliveryPage() {
                         >
                           <Eye className="size-4" />
                         </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => printDeliveryOrder(cid, o)}
+                          title="Imprimir cupom do pedido"
+                        >
+                          <Printer className="size-4" />
+                        </Button>
+
 
                         {o.status !== "entregue" && o.status !== "cancelado" && (
                           <Button
@@ -1656,7 +1970,8 @@ function DeliveryPage() {
                           <DropdownMenuContent align="end">
                             <DropdownMenuLabel>Alterar status para</DropdownMenuLabel>
                             <DropdownMenuSeparator />
-                            {(Object.keys(STATUS_LABEL) as DeliveryStatus[]).map((s) => (
+                            {allowedStatusesFor(o).map((s) => (
+
                               <DropdownMenuItem
                                 key={s}
                                 disabled={s === o.status}
@@ -1724,6 +2039,16 @@ function DeliveryPage() {
                     >
                       <Eye className="size-4" />
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-8 w-8 p-0"
+                      onClick={() => printDeliveryOrder(cid, o)}
+                      title="Imprimir cupom"
+                    >
+                      <Printer className="size-4" />
+                    </Button>
+
 
                     {o.status !== "entregue" && o.status !== "cancelado" && (
                       <Button
@@ -1745,7 +2070,7 @@ function DeliveryPage() {
                       <DropdownMenuContent align="end">
                         <DropdownMenuLabel>Alterar para</DropdownMenuLabel>
                         <DropdownMenuSeparator />
-                        {(Object.keys(STATUS_LABEL) as DeliveryStatus[]).map((s) => (
+                        {allowedStatusesFor(o).map((s) => (
                           <DropdownMenuItem
                             key={s}
                             disabled={s === o.status}
@@ -1806,8 +2131,12 @@ function DeliveryPage() {
                   <div>
                     <label className="text-xs uppercase text-muted-foreground">Telefone</label>
                     <Input
-                      value={driverForm.phone ?? ""}
-                      onChange={(e) => setDriverForm((p) => ({ ...p, phone: e.target.value }))}
+                      inputMode="tel"
+                      placeholder="(00) 00000-0000"
+                      value={maskPhone(driverForm.phone ?? "")}
+                      onChange={(e) =>
+                        setDriverForm((p) => ({ ...p, phone: maskPhone(e.target.value) }))
+                      }
                     />
                   </div>
                   <div>
@@ -1860,7 +2189,23 @@ function DeliveryPage() {
                       <TableCell className="text-sm">{d.phone ?? "—"}</TableCell>
                       <TableCell className="text-sm">{d.vehicle ?? "—"}</TableCell>
                       <TableCell className="text-right">
-                        <Button size="sm" variant="ghost" onClick={() => removeDriver(d.id)}>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          title="Editar entregador"
+                          onClick={() => {
+                            setDriverForm(d);
+                            setDriverOpen(true);
+                          }}
+                        >
+                          <Edit2 className="size-3" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          title="Excluir entregador"
+                          onClick={() => removeDriver(d.id)}
+                        >
                           <Trash2 className="size-3 text-brand-red" />
                         </Button>
                       </TableCell>
@@ -2042,6 +2387,70 @@ function DeliveryPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Dialog: Finalizar pedido (Entregue) */}
+      <Dialog open={!!finalizeOrder} onOpenChange={(o) => !o && setFinalizeOrder(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Finalizar pedido como Entregue</DialogTitle>
+          </DialogHeader>
+          {finalizeOrder && (
+            <div className="space-y-4">
+              <div className="text-sm text-muted-foreground">
+                <div><strong>Cliente:</strong> {finalizeOrder.customer_name}</div>
+                <div><strong>Total:</strong> {brl(Number(finalizeOrder.total))}</div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold">Forma de pagamento *</label>
+                <Select value={finalizePayment} onValueChange={setFinalizePayment}>
+                  <SelectTrigger><SelectValue placeholder="Selecione..." /></SelectTrigger>
+                  <SelectContent>
+                    {paymentMethods.length === 0 && (
+                      <div className="px-2 py-3 text-xs text-muted-foreground">
+                        Nenhuma forma de pagamento ativa cadastrada.
+                      </div>
+                    )}
+                    {paymentMethods.map((m: any) => (
+                      <SelectItem key={m.id} value={m.name}>{m.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold">Caixa onde registrar *</label>
+                <Select value={finalizeRegisterId} onValueChange={setFinalizeRegisterId}>
+                  <SelectTrigger><SelectValue placeholder="Selecione um caixa aberto..." /></SelectTrigger>
+                  <SelectContent>
+                    {openRegisters.length === 0 && (
+                      <div className="px-2 py-3 text-xs text-muted-foreground">
+                        Nenhum caixa aberto. Abra um caixa antes de finalizar.
+                      </div>
+                    )}
+                    {openRegisters.map((r: any) => (
+                      <SelectItem key={r.id} value={r.id}>
+                        {profileLabel(r.user_id_open)}
+                        {r.user_id_open === user?.id ? " (você)" : ""} — aberto em {dt(r.opened_at)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <DialogFooter className="gap-2">
+                <Button variant="outline" onClick={() => setFinalizeOrder(null)} disabled={finalizing}>
+                  Cancelar
+                </Button>
+                <Button onClick={submitFinalize} disabled={finalizing}>
+                  {finalizing ? "Finalizando..." : "Confirmar entrega"}
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
+

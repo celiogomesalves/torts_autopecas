@@ -1,3 +1,4 @@
+import { makePrefetchLoader } from "@/lib/route-prefetch";
 import { usePersistedState } from "@/hooks/use-persisted-state";
 import { updateStockLocation } from "@/lib/db";
 import { PageHeading } from "@/components/page-header";
@@ -6,7 +7,8 @@ import * as React from "react";
 import { useMemo, useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
-import { createStockCount, deleteStockCount, fetchProducts, fetchProductsPaginated, fetchMovementsPaginated, fetchCategories, fetchBrands, fetchStockLocations, fetchPartners, fetchStockCounts, fetchStockCountItems, updateStockCountItemVerified, updateStockCountStatus, fetchProductReferencesByCompany, fetchStockCountTeams, createStockCountTeam, deleteStockCountTeam, updateStockCountTeamLocations, updateStockCountTeamStatus, updateStockCountItem, fetchTeam, updateStockCountTeamMembers, isAdmin, hasPermission } from "@/lib/db";
+import { createStockCount, deleteStockCount, fetchProducts, fetchProductsPaginated, fetchMovementsPaginated, fetchCategories, fetchBrands, fetchStockLocations, fetchPartners, fetchStockCounts, fetchStockCountItems, updateStockCountItemVerified, updateStockCountStatus, fetchProductReferencesByCompany, fetchStockCountTeams, createStockCountTeam, deleteStockCountTeam, updateStockCountTeamLocations, updateStockCountTeamStatus, updateStockCountItem, fetchTeam, updateStockCountTeamMembers, isAdmin, hasPermission, updateProduct, logActivity } from "@/lib/db";
+import { maskCurrency, parseCurrency, formatCurrency } from "@/lib/masks";
 import { buildRefsSearchMap, buildRefsBrandMap } from "@/lib/product-search";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -25,7 +27,9 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger,
 } from "@/components/ui/dialog";
-import { ArrowUpRight, ArrowDownLeft, Settings2, Search, Package, AlertTriangle, TrendingUp, Boxes, Calendar, ArrowDownUp, MapPin, Eye, Plus, Download, ClipboardCheck, CheckCircle2, Trash2, ChevronDown, ScanLine, Printer, X, LayoutGrid, RotateCw, ZoomIn, ZoomOut, RefreshCw, Users, Loader2, ChevronRight } from "lucide-react";
+import { ArrowUpRight, ArrowDownLeft, Settings2, Search, Package, AlertTriangle, TrendingUp, Boxes, Calendar, ArrowDownUp, MapPin, Eye, Plus, Download, ClipboardCheck, CheckCircle2, Check, Trash2, ChevronDown, ScanLine, Printer, X, LayoutGrid, RotateCw, ZoomIn, ZoomOut, RefreshCw, Users, Loader2, ChevronRight, Info } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { supabase as sb } from "@/integrations/supabase/client";
 import { brl, dt } from "@/lib/format";
 import { useValueVisibility, ValueVisibilityToggle } from "@/hooks/use-value-visibility";
 import { cn, normalize, compareProductNames, matchSearch } from "@/lib/utils";
@@ -33,7 +37,11 @@ import type { Product, StockCount, StockCountTeam, StockCountItem } from "@/lib/
 import { toast } from "sonner";
 import { jsPDF } from "jspdf";
 import { PrintButton } from "@/components/print-button";
+import { useConfirm } from "@/components/confirm-dialog";
 import { printList } from "@/lib/print-list";
+import { StockCountChartsDialog } from "@/components/stock-count-charts-dialog";
+
+import { BarChart3 } from "lucide-react";
 
 
 export const Route = createFileRoute("/app/estoque")({
@@ -42,6 +50,7 @@ export const Route = createFileRoute("/app/estoque")({
       filter: (search.filter as string) || undefined,
     };
   },
+  loader: makePrefetchLoader(["locations", "team", "stockCounts", "units"]),
   component: StockPage,
 });
 
@@ -49,6 +58,7 @@ function StockPage() {
   const { currentCompanyId, user } = useAuth();
   const cid = currentCompanyId!;
   const qc = useQueryClient();
+  const confirm = useConfirm();
   const urlSearch = useSearch({ from: "/app/estoque" });
   const [activeTab, setActiveTab] = usePersistedState("estoque:tab", "posicao");
   const [isAdminUser, setIsAdminUser] = useState(false);
@@ -73,6 +83,7 @@ function StockPage() {
   const [search, setSearch] = useState("");
   const [posPage, setPosPage] = useState(1);
   const [histPage, setHistPage] = useState(1);
+  const [countPage, setCountPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => {
     const saved = localStorage.getItem("stock_pageSize");
     return saved ? Number(saved) : 50;
@@ -142,8 +153,13 @@ function StockPage() {
   const openCount = counts.find((count) => count.status === "aberta");
   const allProductsQ = useQuery({
     queryKey: ["all-products-for-map", cid],
-    queryFn: () => fetchProductsPaginated({ companyId: cid, page: 0, pageSize: 1000 }),
+    queryFn: async () => {
+      const all = await fetchProducts(cid);
+      return { data: all, count: all.length };
+    },
     enabled: !!cid && activeTab === "mapa",
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 
   const refsMap = useMemo(
@@ -153,14 +169,38 @@ function StockPage() {
   const refsBrandMap = useMemo(() => buildRefsBrandMap(refsQ.data ?? []), [refsQ.data]);
 
   const [teamFilter, setTeamFilter] = useState<string>("");
+  const [countLocationFilter, setCountLocationFilter] = useState<string>("all");
   const [newTeamName, setNewTeamName] = useState("");
   const [newTeamMembers, setNewTeamMembers] = useState<string[]>([]);
   const [newTeamLocations, setNewTeamLocations] = useState<string[]>([]);
   const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
   const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
+  const [isChartsOpen, setIsChartsOpen] = useState(false);
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
   const [confirmingItem, setConfirmingItem] = useState<StockCountItem | null>(null);
   const [editQuantity, setEditQuantity] = useState<string>("");
+  const [editPrice, setEditPrice] = useState<string>("");
+
+  // Edição completa do produto a partir do modal de contagem
+  const [editProductOpen, setEditProductOpen] = useState(false);
+  const [editProductForm, setEditProductForm] = useState<{
+    name: string;
+    sku: string;
+    location_id: string;
+    sale_price: string;
+    cost_price: string;
+    min_stock: string;
+    unit: string;
+    description: string;
+  } | null>(null);
+  const [savingProductEdit, setSavingProductEdit] = useState(false);
+
+  // Diálogo de ordenação da impressão da contagem
+  const [printOrderOpen, setPrintOrderOpen] = useState(false);
+  const [printOrderTarget, setPrintOrderTarget] = useState<"pdf" | "print" | null>(null);
+  const [printOrderBy, setPrintOrderBy] = useState<"name" | "location">("name");
+
+
 
 
   const [countSearch, setCountSearch] = useState("");
@@ -169,6 +209,7 @@ function StockPage() {
   const [countDate, setCountDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [gridSize, setGridSize] = usePersistedState("stock:grid-size", 40);
   const [selectedCount, setSelectedCount] = useState<StockCount | null>(null);
+  const isCountClosed = selectedCount?.status === "concluida";
   const [finishingCountId, setFinishingCountId] = useState<string | null>(null);
   const teamsQ = useQuery({
     queryKey: ["stock_count_teams", selectedCount?.id],
@@ -179,11 +220,46 @@ function StockPage() {
   const teamMembersQ = useQuery({
     queryKey: ["team", cid],
     queryFn: () => fetchTeam(cid),
-    enabled: !!cid
+    enabled: !!cid,
+    select: (data) => (data || []).filter((m: any) => !m.is_blocked),
   });
+
 
   const [resizingLoc, setResizingLoc] = useState<{ id: string; type: "width" | "height"; startVal: number; startPos: number; currentVal: number } | null>(null);
   const [expandedTeams, setExpandedTeams] = useState<Record<string, boolean>>({});
+  const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set());
+
+  const bulkVerifyEnabledQ = useQuery({
+    queryKey: ["system-bulk-count-verification"],
+    queryFn: async () => {
+      const { data } = await sb
+        .from("system_settings" as any)
+        .select("bulk_count_verification_enabled")
+        .maybeSingle();
+      return Boolean((data as any)?.bulk_count_verification_enabled ?? false);
+    },
+    staleTime: 60_000,
+  });
+  const bulkVerifyEnabled = Boolean(bulkVerifyEnabledQ.data);
+
+  useEffect(() => {
+    setBulkSelectedIds(new Set());
+  }, [selectedCount?.id, teamFilter, countLocationFilter]);
+
+  const bulkVerifyMut = useMutation({
+    mutationFn: async (ids: string[]) => {
+      for (const id of ids) {
+        await updateStockCountItem(id, { verified: true });
+      }
+      return ids;
+    },
+    onSuccess: (ids) => {
+      toast.success(`${ids.length} ${ids.length === 1 ? "item marcado" : "itens marcados"} como verificado(s).`);
+      setBulkSelectedIds(new Set());
+      if (selectedCount) qc.invalidateQueries({ queryKey: ["stock_count_items", selectedCount.id] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
 
   useEffect(() => {
     if (openCount && !selectedCount) {
@@ -191,6 +267,22 @@ function StockPage() {
       setExpandedCountId(openCount.id);
     }
   }, [openCount, selectedCount]);
+
+  // Realtime: mantém Posição de Estoque alinhada com o estoque real
+  useEffect(() => {
+    if (!cid) return;
+    const invalidate = () => {
+      qc.invalidateQueries({ queryKey: ["products-paginated-stock"] });
+      qc.invalidateQueries({ queryKey: ["all-products-for-count", cid] });
+      qc.invalidateQueries({ queryKey: ["all-products-for-map", cid] });
+    };
+    const channel = sb
+      .channel(`stock-sync-${cid}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "products", filter: `company_id=eq.${cid}` }, invalidate)
+      .on("postgres_changes", { event: "*", schema: "public", table: "stock_movements", filter: `company_id=eq.${cid}` }, invalidate)
+      .subscribe();
+    return () => { sb.removeChannel(channel); };
+  }, [cid, qc]);
 
   useEffect(() => {
     if (activeTab !== "mapa") return;
@@ -237,7 +329,12 @@ function StockPage() {
   const createCountMut = useMutation({
     mutationFn: async () => {
       if (!canEditCounts) throw new Error("Apenas administradores podem abrir contagens.");
-      if (counts.some((count) => count.status === "aberta")) throw new Error("Finalize ou exclua a contagem aberta antes de criar uma nova.");
+      if (counts.some((count) => count.status === "aberta" && count.count_date === countDate)) {
+        throw new Error("Já existe uma contagem em aberto para esta data. Finalize ou exclua antes de criar uma nova.");
+      }
+      if (counts.some((count) => count.count_date === countDate)) {
+        throw new Error("Já existe uma contagem registrada para esta data.");
+      }
       const allProducts = await fetchProducts(cid);
       return createStockCount({ companyId: cid, countDate, products: allProducts, userId: user?.id });
     },
@@ -275,10 +372,27 @@ function StockPage() {
   const verifyItemMut = useMutation({
     mutationFn: ({ id, verified, expected_quantity }: { id: string; verified: boolean; expected_quantity?: number }) => 
       updateStockCountItem(id, { verified, expected_quantity }),
-    onSuccess: () => {
+    onMutate: async ({ id, verified, expected_quantity }) => {
+      if (!selectedCount) return;
+      const key = ["stock_count_items", selectedCount.id];
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<StockCountItem[]>(key);
+      if (prev) {
+        qc.setQueryData<StockCountItem[]>(key, prev.map((it) =>
+          it.id === id
+            ? { ...it, verified, ...(expected_quantity !== undefined ? { expected_quantity } : {}), verified_at: verified ? new Date().toISOString() : it.verified_at }
+            : it
+        ));
+      }
+      return { prev, key };
+    },
+    onError: (e: Error, _v, ctx) => {
+      if (ctx?.prev && ctx.key) qc.setQueryData(ctx.key, ctx.prev);
+      toast.error(e.message);
+    },
+    onSettled: () => {
       if (selectedCount) qc.invalidateQueries({ queryKey: ["stock_count_items", selectedCount.id] });
     },
-    onError: (e: Error) => toast.error(e.message),
   });
 
   const createTeamMut = useMutation({
@@ -342,24 +456,188 @@ function StockPage() {
     onError: (e: Error) => toast.error(e.message)
   });
 
-  const handleConfirmVerification = () => {
+  const handleConfirmVerification = async () => {
     if (!confirmingItem) return;
+    if (isCountClosed) { toast.error("Contagem finalizada — não é possível alterar."); return; }
     const qty = parseFloat(editQuantity);
     if (isNaN(qty)) {
       toast.error("Quantidade inválida");
       return;
     }
-    verifyItemMut.mutate({ 
-      id: confirmingItem.id, 
-      verified: true, 
-      expected_quantity: qty 
+    const price = parseCurrency(editPrice);
+    try {
+      const prod = allProductsForCount.find((p) => p.id === confirmingItem.product_id) || products.find((p) => p.id === confirmingItem.product_id);
+      if (prod) {
+        const patch: Partial<Product> = {};
+        if (Number(prod.sale_price || 0) !== price) patch.sale_price = price;
+        if (Number(prod.stock || 0) !== qty) patch.stock = qty;
+        if (Object.keys(patch).length > 0) {
+          await updateProduct(prod.id, patch, user?.id);
+        }
+      }
+    } catch (e: any) {
+      toast.error(e?.message ?? "Erro ao atualizar produto");
+      return;
+    }
+    verifyItemMut.mutate({
+      id: confirmingItem.id,
+      verified: true,
+      expected_quantity: qty
     }, {
       onSuccess: () => {
+        qc.invalidateQueries({ queryKey: ["products"] });
+        qc.invalidateQueries({ queryKey: ["products-paginated-stock"] });
+        qc.invalidateQueries({ queryKey: ["all-products-for-count", cid] });
         setIsConfirmModalOpen(false);
         setConfirmingItem(null);
       }
     });
   };
+
+
+  const openEditProductFromCount = () => {
+    if (!confirmingItem) return;
+    const prod = allProductsForCount.find((p) => p.id === confirmingItem.product_id)
+      || products.find((p) => p.id === confirmingItem.product_id);
+    if (!prod) {
+      toast.error("Produto não encontrado");
+      return;
+    }
+    setEditProductForm({
+      name: prod.name || "",
+      sku: prod.sku || "",
+      location_id: prod.location_id || "",
+      sale_price: formatCurrency(Number(prod.sale_price || 0)),
+      cost_price: formatCurrency(Number(prod.cost_price || 0)),
+      min_stock: String(prod.min_stock ?? 0),
+      unit: prod.unit || "UN",
+      description: prod.description || "",
+    });
+    setEditProductOpen(true);
+  };
+
+  const handleSaveProductEdit = async () => {
+    if (!confirmingItem || !editProductForm) return;
+    if (isCountClosed) { toast.error("Contagem finalizada — não é possível alterar."); return; }
+    const prod = allProductsForCount.find((p) => p.id === confirmingItem.product_id);
+    if (!prod) {
+      toast.error("Produto não encontrado");
+      return;
+    }
+    const newLocId = editProductForm.location_id || null;
+    const oldLocId = prod.location_id || null;
+    const locationChanged = newLocId !== oldLocId;
+
+    const teams = teamsQ.data || [];
+    let currentTeamId = teamFilter;
+    if (!currentTeamId && user?.id) {
+      const myTeam = teams.find((t) => t.members?.includes(user.id));
+      if (myTeam) currentTeamId = myTeam.id;
+    }
+    const destTeam = locationChanged && newLocId
+      ? teams.find((t) => t.id !== currentTeamId && (t.locations || []).includes(newLocId))
+      : null;
+
+    if (locationChanged && destTeam) {
+      if (destTeam.status === "concluida") {
+        toast.error(`Não é possível transferir: a equipe "${destTeam.name}" já finalizou a contagem.`);
+        return;
+      }
+      const ok = await confirm({
+        title: "Transferir contagem do produto?",
+        description: `A localização escolhida pertence à equipe "${destTeam.name}". O produto será transferido para a lista de contagem dela.`,
+        confirmLabel: "Transferir",
+      });
+      if (!ok) return;
+    }
+
+    setSavingProductEdit(true);
+    try {
+      const patch: Partial<Product> = {
+        name: editProductForm.name.trim(),
+        sku: editProductForm.sku.trim(),
+        location_id: newLocId,
+        sale_price: parseCurrency(editProductForm.sale_price),
+        cost_price: parseCurrency(editProductForm.cost_price),
+        min_stock: Number(editProductForm.min_stock) || 0,
+        unit: editProductForm.unit || "UN",
+        description: editProductForm.description,
+      };
+      await updateProduct(prod.id, patch, user?.id);
+
+      const itemPatch: any = {
+        product_name: patch.name,
+        sku: patch.sku,
+        unit: patch.unit,
+      };
+      if (locationChanged && destTeam) {
+        itemPatch.verified = false;
+        itemPatch.verified_at = null;
+      }
+      await updateStockCountItem(confirmingItem.id, itemPatch);
+
+      if (locationChanged && destTeam && selectedCount) {
+        const key = `stock_count_transfers:${selectedCount.id}:${destTeam.id}`;
+        try {
+          const cur = JSON.parse(localStorage.getItem(key) || "[]") as string[];
+          cur.push(patch.name as string);
+          localStorage.setItem(key, JSON.stringify(cur));
+        } catch { /* ignore */ }
+
+        // Auditoria: registra a transferência
+        const teams = teamsQ.data || [];
+        const originTeam = teams.find((t) => (t.locations || []).includes(oldLocId || ""));
+        const originLocName = locations.find((l) => l.id === oldLocId)?.name || null;
+        const destLocName = locations.find((l) => l.id === newLocId)?.name || null;
+        if (user?.id) {
+          await logActivity({
+            companyId: cid,
+            userId: user.id,
+            action: "STOCK_COUNT_TRANSFER",
+            entity: "stock_count_items",
+            entityId: confirmingItem.id,
+            meta: {
+              stock_count_id: selectedCount.id,
+              product_id: prod.id,
+              product_name: patch.name,
+              from_team_id: originTeam?.id ?? null,
+              from_team_name: originTeam?.name ?? null,
+              from_location_id: oldLocId,
+              from_location_name: originLocName,
+              to_team_id: destTeam.id,
+              to_team_name: destTeam.name,
+              to_location_id: newLocId,
+              to_location_name: destLocName,
+              reason: "Edição de produto durante contagem (mudança de localização)",
+              transferred_at: new Date().toISOString(),
+            },
+          });
+        }
+
+        toast.success(`Produto transferido para a equipe "${destTeam.name}".`);
+      } else {
+        toast.success("Produto atualizado.");
+      }
+
+      qc.invalidateQueries({ queryKey: ["all-products-for-count", cid] });
+      qc.invalidateQueries({ queryKey: ["products"] });
+      qc.invalidateQueries({ queryKey: ["products-paginated-stock"] });
+      if (selectedCount) qc.invalidateQueries({ queryKey: ["stock_count_items", selectedCount.id] });
+
+      setEditProductOpen(false);
+      setEditProductForm(null);
+      if (locationChanged && destTeam) {
+        setIsConfirmModalOpen(false);
+        setConfirmingItem(null);
+      }
+    } catch (e: any) {
+      toast.error(e?.message ?? "Erro ao salvar produto");
+    } finally {
+      setSavingProductEdit(false);
+    }
+  };
+
+
 
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
 
@@ -386,7 +664,33 @@ function StockPage() {
   };
 
 
-  const paginatedPos = products;
+  const paginatedPos = useMemo(() => {
+    if (!sortConfig) return products;
+    const arr = [...products];
+    const { key, direction } = sortConfig;
+    const dir = direction === 'asc' ? 1 : -1;
+    arr.sort((a: any, b: any) => {
+      let va: any, vb: any;
+      switch (key) {
+        case 'name': va = (a.name || '').toLowerCase(); vb = (b.name || '').toLowerCase(); break;
+        case 'sku': va = (a.sku || '').toLowerCase(); vb = (b.sku || '').toLowerCase(); break;
+        case 'location': va = (getProductLocationName(a.id, a.location_id) || '').toLowerCase(); vb = (getProductLocationName(b.id, b.location_id) || '').toLowerCase(); break;
+        case 'stock': va = Number(a.stock) || 0; vb = Number(b.stock) || 0; break;
+        case 'min_stock': va = Number(a.min_stock) || 0; vb = Number(b.min_stock) || 0; break;
+        case 'cost_price': va = Number(a.cost_price) || 0; vb = Number(b.cost_price) || 0; break;
+        case 'total_cost': va = (Number(a.stock) || 0) * (Number(a.cost_price) || 0); vb = (Number(b.stock) || 0) * (Number(b.cost_price) || 0); break;
+        case 'status': {
+          const st = (p: any) => { const s = Number(p.stock) || 0; const m = Number(p.min_stock) || 0; return s === 0 ? 0 : s <= m ? 1 : 2; };
+          va = st(a); vb = st(b); break;
+        }
+        default: va = 0; vb = 0;
+      }
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    });
+    return arr;
+  }, [products, sortConfig, locations]);
   const totalPosPages = Math.ceil(totalProductsCount / pageSize);
 
   const paginatedHist = movements;
@@ -418,31 +722,48 @@ function StockPage() {
     queryKey: ["all-products-for-count", cid],
     queryFn: () => fetchProducts(cid),
     enabled: !!cid && (!!openCount || !!selectedCount),
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 
   const allProductsForCount = allProductsForCountQ.data ?? [];
+  const productsForCountReady = !allProductsForCountQ.isLoading && allProductsForCount.length > 0;
 
   const teamScopedItems = useMemo(() => {
     const teams = teamsQ.data || [];
     let effectiveTeamId = teamFilter;
-    
+
     // Se não houver filtro manual, tenta encontrar a equipe do usuário logado
     if (!effectiveTeamId && user?.id) {
       const myTeam = teams.find(t => t.members?.includes(user.id));
       if (myTeam) {
         effectiveTeamId = myTeam.id;
-        // Opcionalmente: setTeamFilter(myTeam.id); // Não fazemos isso aqui para evitar loops de render
       }
     }
 
     if (!effectiveTeamId) return [];
+    // Evita esconder tudo enquanto os produtos ainda carregam
+    if (!productsForCountReady) return countItems;
+    if (effectiveTeamId === "all") {
+      if (countLocationFilter !== "all") {
+        return countItems.filter(item => {
+          const product = allProductsForCount.find(p => p.id === item.product_id);
+          if (!product?.location_id) return false;
+          if (product.location_id !== countLocationFilter) return false;
+          return true;
+        });
+      }
+      return countItems;
+    }
     const team = teams.find(t => t.id === effectiveTeamId);
     const teamLocIds = new Set(team?.locations || []);
     return countItems.filter(item => {
       const product = allProductsForCount.find(p => p.id === item.product_id);
-      return product?.location_id && teamLocIds.has(product.location_id);
+      if (!product?.location_id || !teamLocIds.has(product.location_id)) return false;
+      if (countLocationFilter !== "all" && product.location_id !== countLocationFilter) return false;
+      return true;
     });
-  }, [countItems, teamFilter, teamsQ.data, allProductsForCount, user?.id]);
+  }, [countItems, teamFilter, teamsQ.data, allProductsForCount, user?.id, productsForCountReady, countLocationFilter]);
 
   // Efeito para pré-selecionar a equipe do usuário se estiver vazia
   useEffect(() => {
@@ -451,6 +772,28 @@ function StockPage() {
       if (myTeam) setTeamFilter(myTeam.id);
     }
   }, [teamFilter, user?.id, teamsQ.data]);
+
+  // Resetar página de contagem quando filtros mudarem
+  useEffect(() => {
+    setCountPage(1);
+  }, [countSearch, countLocationFilter, teamFilter]);
+  useEffect(() => {
+    if (!selectedCount?.id || !teamFilter) return;
+    const key = `stock_count_transfers:${selectedCount.id}:${teamFilter}`;
+    try {
+      const items = JSON.parse(localStorage.getItem(key) || "[]") as string[];
+      if (items.length > 0) {
+        toast.info(
+          items.length === 1
+            ? `Novo produto transferido para sua equipe: ${items[0]}`
+            : `${items.length} novos produtos transferidos para sua equipe`,
+          { description: items.length > 1 ? items.join(", ") : undefined, duration: 6000 },
+        );
+        localStorage.removeItem(key);
+      }
+    } catch { /* ignore */ }
+  }, [selectedCount?.id, teamFilter, countItemsQ.data]);
+
   const verifiedTotal = teamScopedItems.filter((item) => item.verified).length;
   const teamTotal = teamScopedItems.length;
 
@@ -458,16 +801,43 @@ function StockPage() {
     let result = [...countItems];
 
     if (countSearch) {
-      result = result.filter(item => matchSearch(item.product_name + " " + item.sku, countSearch));
+      result = result.filter(item => {
+        const p: any = allProductsForCount.find((pp) => pp.id === item.product_id) || {};
+        const brandName = p.brand_id ? (brands.find((b) => b.id === p.brand_id)?.name || "") : (p.brand || "");
+        const catName = p.category_id ? (categories.find((c) => c.id === p.category_id)?.name || "") : "";
+        const locName = p.location_id ? (locations.find((l) => l.id === p.location_id)?.name || "") : "";
+        const refs = refsMap.get(item.product_id) || "";
+        const haystack = [
+          item.product_name, item.sku,
+          p.name, p.sku, p.alternative_code, p.gtin, p.gtin_tributavel,
+          p.description, p.unit, brandName, catName, locName, refs,
+        ].filter(Boolean).join(" ");
+        return matchSearch(haystack, countSearch);
+      });
     }
 
-    if (teamFilter) {
-      const teams = teamsQ.data || [];
-      const team = teams.find(t => t.id === teamFilter);
+
+    const teams = teamsQ.data || [];
+    let effectiveTeamId = teamFilter;
+    if (!effectiveTeamId && user?.id) {
+      const myTeam = teams.find((t) => t.members?.includes(user.id));
+      if (myTeam) effectiveTeamId = myTeam.id;
+    }
+    if (effectiveTeamId && effectiveTeamId !== "all" && productsForCountReady) {
+      const team = teams.find((t) => t.id === effectiveTeamId);
       const teamLocIds = new Set(team?.locations || []);
-      result = result.filter(item => {
-        const product = allProductsForCount.find(p => p.id === item.product_id);
-        return product?.location_id && teamLocIds.has(product.location_id);
+      result = result.filter((item) => {
+        const product = allProductsForCount.find((p) => p.id === item.product_id);
+        if (!product?.location_id || !teamLocIds.has(product.location_id)) return false;
+        if (countLocationFilter !== "all" && product.location_id !== countLocationFilter) return false;
+        return true;
+      });
+    } else if (effectiveTeamId === "all" && productsForCountReady && countLocationFilter !== "all") {
+      result = result.filter((item) => {
+        const product = allProductsForCount.find((p) => p.id === item.product_id);
+        if (!product?.location_id) return false;
+        if (product.location_id !== countLocationFilter) return false;
+        return true;
       });
     }
 
@@ -480,6 +850,11 @@ function StockPage() {
       if (effectiveSortConfig.key === "location") {
         aValue = getProductLocationName(a.product_id);
         bValue = getProductLocationName(b.product_id);
+      } else if (effectiveSortConfig.key === "sale_price") {
+        const prodA = allProductsForCount.find((p) => p.id === a.product_id);
+        const prodB = allProductsForCount.find((p) => p.id === b.product_id);
+        aValue = Number(prodA?.sale_price || 0);
+        bValue = Number(prodB?.sale_price || 0);
       } else {
         aValue = a[effectiveSortConfig.key as keyof typeof a];
         bValue = b[effectiveSortConfig.key as keyof typeof b];
@@ -507,7 +882,11 @@ function StockPage() {
     });
 
     return result;
-  }, [countItems, countSortConfig, allProductsForCount, locations, countSearch, teamFilter, teamsQ.data]);
+  }, [countItems, countSortConfig, allProductsForCount, locations, countSearch, teamFilter, teamsQ.data, user?.id, productsForCountReady, countLocationFilter, brands, categories, refsMap]);
+
+  const countPageSize = 50;
+  const totalCountPages = Math.ceil(sortedCountItems.length / countPageSize) || 1;
+  const paginatedCountItems = sortedCountItems.slice((countPage - 1) * countPageSize, countPage * countPageSize);
 
 
   const SortableCountHead = ({ sortKey, children, className }: { sortKey: string; children: React.ReactNode; className?: string }) => (
@@ -516,7 +895,22 @@ function StockPage() {
     </TableHead>
   );
 
-  const exportCountPdf = () => {
+  const sortForPrint = (items: typeof sortedCountItems, by: "name" | "location") => {
+    const arr = [...items];
+    if (by === "location") {
+      arr.sort((a, b) => {
+        const la = getProductLocationName(a.product_id) || "";
+        const lb = getProductLocationName(b.product_id) || "";
+        const cmp = compareProductNames(la, lb);
+        return cmp !== 0 ? cmp : compareProductNames(a.product_name, b.product_name);
+      });
+    } else {
+      arr.sort((a, b) => compareProductNames(a.product_name, b.product_name));
+    }
+    return arr;
+  };
+
+  const exportCountPdf = (orderBy: "name" | "location" = "name") => {
     if (!selectedCount || !countItems.length) return;
     const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
     const pageWidth = doc.internal.pageSize.getWidth();
@@ -527,8 +921,12 @@ function StockPage() {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
     doc.text(`Data: ${new Date(`${selectedCount.count_date}T00:00:00`).toLocaleDateString("pt-BR")}`, pageWidth - 14, y, { align: "right" });
-    y += 10;
+    y += 5;
+    doc.setFontSize(8);
+    doc.text(`Ordenação: ${orderBy === "location" ? "Localização" : "Nome"}`, 14, y);
+    y += 5;
     doc.setFont("helvetica", "bold");
+    doc.setFontSize(9);
     doc.text("Check", 14, y);
     doc.text("SKU", 30, y);
     doc.text("Produto", 50, y);
@@ -540,7 +938,8 @@ function StockPage() {
     doc.line(14, y, 200, y);
     y += 6;
     doc.setFont("helvetica", "normal");
-    sortedCountItems.forEach((item) => {
+    const items = sortForPrint(sortedCountItems, orderBy);
+    items.forEach((item) => {
       if (y > 280) {
         doc.addPage();
         y = 16;
@@ -600,14 +999,14 @@ function StockPage() {
     });
   };
 
-  const handlePrintCount = () => {
+  const handlePrintCount = (orderBy: "name" | "location" = "name") => {
     if (!selectedCount) return;
-    const dataToPrint = sortedCountItems; // Se não tem paginação na contagem, printAll não muda nada, mas seguimos o padrão
+    const dataToPrint = sortForPrint(sortedCountItems, orderBy);
     const verifiedCount = dataToPrint.filter((i) => i.verified).length;
-    
+
     printList({
       title: "Contagem de Estoque",
-      subtitle: `Data: ${new Date(`${selectedCount.count_date}T00:00:00`).toLocaleDateString("pt-BR")} · Status: ${selectedCount.status}`,
+      subtitle: `Data: ${new Date(`${selectedCount.count_date}T00:00:00`).toLocaleDateString("pt-BR")} · Status: ${selectedCount.status} · Ordenado por: ${orderBy === "location" ? "Localização" : "Nome"}`,
       columns: [
         { header: "✓", accessor: (i: any) => (i.verified ? "Sim" : ""), width: "6%", align: "center" },
         { header: "Código", accessor: (i: any) => i.sku, width: "14%" },
@@ -623,6 +1022,21 @@ function StockPage() {
         { label: "Verificados", value: `${verifiedCount} (${dataToPrint.length ? Math.round((verifiedCount / dataToPrint.length) * 100) : 0}%)` },
       ],
     });
+  };
+
+  const openPrintOrderDialog = (target: "pdf" | "print") => {
+    setPrintOrderTarget(target);
+    setPrintOrderBy("name");
+    setPrintOrderOpen(true);
+  };
+
+  const handleConfirmPrintOrder = () => {
+    const target = printOrderTarget;
+    const order = printOrderBy;
+    setPrintOrderOpen(false);
+    setPrintOrderTarget(null);
+    if (target === "pdf") exportCountPdf(order);
+    else if (target === "print") handlePrintCount(order);
   };
 
   const handleScanLookup = (raw: string) => {
@@ -1684,14 +2098,15 @@ function StockPage() {
                     >
                       <ScanLine className="size-4 mr-2" /> Modo conferência
                     </Button>
-                    <Button variant="outline" onClick={exportCountPdf} disabled={!selectedCount || countItems.length === 0}>
+                    <Button variant="outline" onClick={() => openPrintOrderDialog("pdf")} disabled={!selectedCount || countItems.length === 0}>
                       <Download className="size-4 mr-2" /> PDF
                     </Button>
                     <PrintButton
                       label="Imprimir"
                       disabled={!selectedCount || sortedCountItems.length === 0}
-                      onClick={handlePrintCount}
+                      onClick={() => openPrintOrderDialog("print")}
                     />
+
                   </div>
                 )}
               </div>
@@ -1701,9 +2116,14 @@ function StockPage() {
                 <div className="text-sm">
                   Contagem aberta em: <span className="font-bold">{new Date(`${openCount.count_date}T00:00:00`).toLocaleDateString("pt-BR")}</span>
                 </div>
-                <Button variant="outline" size="sm" onClick={() => { setSelectedCount(openCount); setIsTeamModalOpen(true); }}>
-                  <Users className="size-4 mr-2" /> {isAdminUser ? "Gerenciar Equipes" : "Minha Equipe"}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => { setSelectedCount(openCount); setIsChartsOpen(true); }}>
+                    <BarChart3 className="size-4 mr-2" /> Gráficos
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => { setSelectedCount(openCount); setIsTeamModalOpen(true); }}>
+                    <Users className="size-4 mr-2" /> {isAdminUser ? "Gerenciar Equipes" : "Minha Equipe"}
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -1739,15 +2159,25 @@ function StockPage() {
                               return product && teamLocationIds.has(product.location_id || "");
                             });
                             const allItemsVerified = relevantItems.length > 0 && relevantItems.every(i => i.verified);
-                            
-                            const canFinish = allTeamsDone && allItemsVerified;
+
+                            // Todas as localizações devem estar associadas a alguma equipe
+                            const allLocationsAssigned = locations.length > 0 && locations.every(l => teamLocationIds.has(l.id));
+
+                            const canFinish = allItemsVerified && allLocationsAssigned;
+                            const finishHint = !allLocationsAssigned
+                              ? "Associe todas as localizações a alguma equipe antes de finalizar"
+                              : !allItemsVerified
+                              ? "Todos os produtos das equipes devem estar 100% contados"
+                              : !allTeamsDone
+                              ? "Dica: você pode finalizar mesmo com equipes ainda abertas, pois todos os itens já foram verificados"
+                              : undefined;
 
                             return (
                               <Button 
                                 size="sm" 
                                 variant="outline" 
                                 disabled={finishCountMut.isPending || !canFinish}
-                                title={!canFinish ? "Conclua todas as equipes e verifique todos os itens das localizações atribuídas" : undefined}
+                                title={finishHint}
                                 onClick={() => setFinishingCountId(count.id)}
                               >
                                 {finishCountMut.isPending && finishingCountId === count.id ? (
@@ -1765,7 +2195,13 @@ function StockPage() {
                           })()}
 
 
-                          {canEditCounts && <Button size="icon" variant="ghost" className="size-8 text-destructive" onClick={() => { if (confirm("Deseja realmente excluir esta contagem?")) deleteCountMut.mutate(count.id); }} disabled={deleteCountMut.isPending} title="Excluir contagem">{deleteCountMut.isPending ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}</Button>}
+                          {count.status === "concluida" ? (
+                            <span className="inline-flex size-8 items-center justify-center rounded-md text-green-600" title="Contagem finalizada">
+                              <Check className="size-4" />
+                            </span>
+                          ) : (
+                            canEditCounts && <Button size="icon" variant="ghost" className="size-8 text-destructive" onClick={async () => { if (await confirm({ title: "Excluir contagem?", description: "Esta ação não pode ser desfeita.", confirmLabel: "Excluir", variant: "destructive" })) deleteCountMut.mutate(count.id); }} disabled={deleteCountMut.isPending} title="Excluir contagem">{deleteCountMut.isPending ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}</Button>
+                          )}
                         </div>
 
                       </div>
@@ -1786,11 +2222,12 @@ function StockPage() {
                       
                       <div className="flex gap-2">
                         <div className="flex-1 relative">
-                          <Select value={teamFilter} onValueChange={setTeamFilter}>
+                          <Select value={teamFilter} onValueChange={(v) => { setTeamFilter(v); setCountLocationFilter("all"); setCountPage(1); }}>
                             <SelectTrigger className="h-9 text-sm w-full">
                               <SelectValue placeholder="Selecione sua Equipe" />
                             </SelectTrigger>
                             <SelectContent>
+                              <SelectItem value="all">Ver todos</SelectItem>
                               {(teamsQ.data || []).map(t => (
                                 <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
                               ))}
@@ -1805,6 +2242,27 @@ function StockPage() {
                           </Button>
                         )}
                       </div>
+
+                      {teamFilter && (() => {
+                        const team = (teamsQ.data || []).find(t => t.id === teamFilter);
+                        const teamLocs = (team?.locations || [])
+                          .map(id => locations.find(l => l.id === id))
+                          .filter((l): l is NonNullable<typeof l> => !!l);
+                        if (teamLocs.length === 0) return null;
+                        return (
+                          <Select value={countLocationFilter} onValueChange={setCountLocationFilter}>
+                            <SelectTrigger className="h-9 text-sm w-full">
+                              <SelectValue placeholder="Localização" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="all">Todas as localizações ({teamLocs.length})</SelectItem>
+                              {[...teamLocs].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')).map(l => (
+                                 <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
+                               ))}
+                            </SelectContent>
+                          </Select>
+                        );
+                      })()}
 
 
                     </div>
@@ -1822,9 +2280,40 @@ function StockPage() {
                             </div>
                           )}
                         </div>
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <span>Exibindo {sortedCountItems.length} produtos</span>
-                          <Badge variant="outline" className="h-5">{teamTotal ? Math.round((verifiedTotal / teamTotal) * 100) : 0}% concluído</Badge>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+                          <span>Exibindo {paginatedCountItems.length} de {sortedCountItems.length} produtos</span>
+                          <Badge variant="outline" className="h-5">{(() => {
+                            if (!teamTotal) return 0;
+                            if (verifiedTotal >= teamTotal) return 100;
+                            const pct = (verifiedTotal / teamTotal) * 100;
+                            return Math.min(99, Math.floor(pct));
+                          })()}% concluído</Badge>
+                          {bulkVerifyEnabled && bulkSelectedIds.size > 0 && count.status === "aberta" && (
+                            <Button
+                              size="sm"
+                              variant="default"
+                              disabled={bulkVerifyMut.isPending}
+                              onClick={async () => {
+                                const ids = sortedCountItems
+                                  .filter((it) => bulkSelectedIds.has(it.id) && !it.verified)
+                                  .map((it) => it.id);
+                                if (ids.length === 0) {
+                                  toast.info("Os itens selecionados já estão verificados.");
+                                  return;
+                                }
+                                const ok = await confirm({
+                                  title: `Marcar ${ids.length} ${ids.length === 1 ? "item" : "itens"} como verificado(s)?`,
+                                  description: "A quantidade e o valor NÃO serão alterados. Todos os registros selecionados serão apenas marcados como verificados.",
+                                  confirmLabel: "Marcar como verificados",
+                                  variant: "default",
+                                });
+                                if (ok) bulkVerifyMut.mutate(ids);
+                              }}
+                            >
+                              {bulkVerifyMut.isPending ? <Loader2 className="size-4 mr-1 animate-spin" /> : <CheckCircle2 className="size-4 mr-1" />}
+                              Verificar selecionados ({bulkSelectedIds.size})
+                            </Button>
+                          )}
                         </div>
                       </div>
                     )}
@@ -1869,19 +2358,55 @@ function StockPage() {
                       <Table>
                         <TableHeader>
                           <TableRow>
+                            {bulkVerifyEnabled && (
+                              <TableHead className="w-[40px]">
+                                {(() => {
+                                  const selectable = sortedCountItems.filter((it) => !it.verified);
+                                  const allSelected = selectable.length > 0 && selectable.every((it) => bulkSelectedIds.has(it.id));
+                                  return (
+                                    <Checkbox
+                                      checked={allSelected}
+                                      disabled={selectable.length === 0 || count.status !== "aberta"}
+                                      onCheckedChange={(checked) => {
+                                        setBulkSelectedIds((prev) => {
+                                          const next = new Set(prev);
+                                          if (checked === true) {
+                                            selectable.forEach((it) => next.add(it.id));
+                                          } else {
+                                            selectable.forEach((it) => next.delete(it.id));
+                                          }
+                                          return next;
+                                        });
+                                      }}
+                                      aria-label="Selecionar todos pendentes"
+                                    />
+                                  );
+                                })()}
+                              </TableHead>
+                            )}
                             <SortableCountHead sortKey="verified" className="w-[64px]">Check</SortableCountHead>
                             <SortableCountHead sortKey="verified">Status</SortableCountHead>
                             <SortableCountHead sortKey="product_name">Produto</SortableCountHead>
                             <SortableCountHead sortKey="location" className="hidden md:table-cell">Localização</SortableCountHead>
                             <SortableCountHead sortKey="sku" className="hidden md:table-cell">Código</SortableCountHead>
+                            <SortableCountHead sortKey="sale_price" className="hidden md:table-cell text-right">Valor</SortableCountHead>
                             <SortableCountHead sortKey="verified_at" className="hidden lg:table-cell">Verificado em</SortableCountHead>
                             <SortableCountHead sortKey="expected_quantity" className="text-right">Estoque</SortableCountHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {sortedCountItems.length === 0 ? (
+                          {(!productsForCountReady || countItemsQ.isLoading) ? (
                             <TableRow>
-                              <TableCell colSpan={7} className="text-center py-10 text-muted-foreground italic">
+                              <TableCell colSpan={bulkVerifyEnabled ? 9 : 8} className="text-center py-10 text-muted-foreground">
+                                <div className="flex items-center justify-center gap-2">
+                                  <Loader2 className="size-4 animate-spin text-brand-orange" />
+                                  <span>Carregando produtos da equipe...</span>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ) : sortedCountItems.length === 0 ? (
+                            <TableRow>
+                              <TableCell colSpan={bulkVerifyEnabled ? 9 : 8} className="text-center py-10 text-muted-foreground italic">
                                 {(teamsQ.data || []).length === 0 ? (
                                   <div className="space-y-3">
                                     <p>Nenhuma equipe definida para esta contagem.</p>
@@ -1896,15 +2421,37 @@ function StockPage() {
                                 )}
                               </TableCell>
                             </TableRow>
-                          ) : sortedCountItems.map((item) => (
-                            <TableRow key={item.id}>
+
+                          ) : paginatedCountItems.map((item) => (
+                            <TableRow key={item.id} data-state={bulkSelectedIds.has(item.id) ? "selected" : undefined}>
+                              {bulkVerifyEnabled && (
+                                <TableCell>
+                                  <Checkbox
+                                    checked={bulkSelectedIds.has(item.id)}
+                                    disabled={item.verified || count.status !== "aberta"}
+                                    onCheckedChange={(checked) => {
+                                      setBulkSelectedIds((prev) => {
+                                        const next = new Set(prev);
+                                        if (checked === true) next.add(item.id);
+                                        else next.delete(item.id);
+                                        return next;
+                                      });
+                                    }}
+                                    aria-label="Selecionar item"
+                                  />
+                                </TableCell>
+                              )}
                               <TableCell>
                                 <Checkbox 
                                   checked={item.verified} 
+                                  disabled={count.status !== "aberta"}
                                   onCheckedChange={(checked) => {
+                                    if (count.status !== "aberta") return;
                                     if (checked === true) {
+                                      const prod = allProductsForCount.find((p) => p.id === item.product_id);
                                       setConfirmingItem(item);
                                       setEditQuantity(item.expected_quantity.toString());
+                                      setEditPrice(prod ? formatCurrency(Number(prod.sale_price || 0)) : "0,00");
                                       setIsConfirmModalOpen(true);
                                     } else {
                                       verifyItemMut.mutate({ id: item.id, verified: false });
@@ -1919,17 +2466,132 @@ function StockPage() {
                                   <Badge variant="outline" className="border-brand-orange/50 text-brand-orange">Pendente</Badge>
                                 )}
                               </TableCell>
-                              <TableCell className="font-medium">{item.product_name}</TableCell>
+                              <TableCell className="font-medium">
+                                <div className="flex items-center gap-1.5">
+                                  <span>{item.product_name}</span>
+                                  {(() => {
+                                    const prod = allProductsForCount.find((p) => p.id === item.product_id);
+                                    const brandName = (brands.find((b) => b.id === prod?.brand_id)?.name || prod?.brand || "").trim();
+                                    const categoryName = (categories.find((c) => c.id === prod?.category_id)?.name || "").trim();
+                                    const locationName = getProductLocationName(item.product_id);
+                                    return (
+                                      <Popover>
+                                        <PopoverTrigger asChild>
+                                          <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-5 w-5 text-muted-foreground hover:text-brand-orange"
+                                            aria-label="Informações do produto"
+                                            title="Ver informações completas"
+                                          >
+                                            <Info className="size-3.5" />
+                                          </Button>
+                                        </PopoverTrigger>
+                                        <PopoverContent side="right" align="start" className="w-80 text-sm space-y-2">
+                                          <div className="font-semibold text-base leading-tight">{item.product_name}</div>
+                                          <div className="grid grid-cols-[110px_1fr] gap-x-2 gap-y-1 text-xs">
+                                            <span className="text-muted-foreground">SKU</span>
+                                            <span className="font-mono">{item.sku || "—"}</span>
+                                            <span className="text-muted-foreground">Unidade</span>
+                                            <span>{item.unit || "UN"}</span>
+                                            <span className="text-muted-foreground">Marca</span>
+                                            <span>{brandName || "—"}</span>
+                                            <span className="text-muted-foreground">Categoria</span>
+                                            <span>{categoryName || "—"}</span>
+                                            <span className="text-muted-foreground">Localização</span>
+                                            <span>{locationName || "—"}</span>
+                                            <span className="text-muted-foreground">Preço custo</span>
+                                            <span>{prod ? brl(Number(prod.cost_price || 0)) : "—"}</span>
+                                            <span className="text-muted-foreground">Preço venda</span>
+                                            <span>{prod ? brl(Number(prod.sale_price || 0)) : "—"}</span>
+                                            <span className="text-muted-foreground">Estoque atual</span>
+                                            <span>{prod ? `${Number(prod.stock ?? 0)} ${item.unit || "UN"}` : "—"}</span>
+                                            <span className="text-muted-foreground">Estoque mínimo</span>
+                                            <span>{prod ? `${Number(prod.min_stock ?? 0)} ${item.unit || "UN"}` : "—"}</span>
+                                            <span className="text-muted-foreground">Esperado</span>
+                                            <span>{Number(item.expected_quantity)} {item.unit || "UN"}</span>
+                                          </div>
+                                          {prod?.description && (
+                                            <div className="pt-1 border-t">
+                                              <div className="text-xs text-muted-foreground mb-0.5">Descrição</div>
+                                              <div className="text-xs whitespace-pre-wrap">{prod.description}</div>
+                                            </div>
+                                          )}
+                                        </PopoverContent>
+                                      </Popover>
+                                    );
+                                  })()}
+                                </div>
+                                {(() => {
+                                  const prod = allProductsForCount.find((p) => p.id === item.product_id);
+                                  const brandName = (brands.find((b) => b.id === prod?.brand_id)?.name || prod?.brand || "").trim();
+                                  const extraCount = refsBrandMap.get(item.product_id)?.size ?? 0;
+                                  const teamName = teamFilter === "all"
+                                    ? (teamsQ.data || []).find(t => (t.locations || []).includes(prod?.location_id || ""))?.name
+                                    : null;
+                                  if (!brandName && extraCount === 0 && !teamName) return null;
+                                  return (
+                                    <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                                      {brandName && <span className="uppercase tracking-wide">{brandName}</span>}
+                                      {extraCount > 0 && (
+                                        <Badge variant="outline" className="h-4 px-1.5 text-[10px] border-brand-orange/50 text-brand-orange">
+                                          +{extraCount} {extraCount === 1 ? "marca" : "marcas"}
+                                        </Badge>
+                                      )}
+                                      {teamName && (
+                                        <Badge variant="outline" className="h-4 px-1.5 text-[10px] border-muted-foreground/30 text-muted-foreground font-normal">
+                                          <Users className="size-2.5 mr-0.5" /> {teamName}
+                                        </Badge>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+                              </TableCell>
                               <TableCell className="hidden md:table-cell text-sm text-muted-foreground"><span className="inline-flex items-center gap-1"><MapPin className="size-3" /> {getProductLocationName(item.product_id)}</span></TableCell>
-                              <TableCell className="hidden md:table-cell font-mono text-xs text-muted-foreground">{item.sku}</TableCell>
+                              <TableCell className="hidden md:table-cell font-mono text-xs text-muted-foreground">
+                                <div className="flex flex-col gap-0.5">
+                                  <span>{item.sku}</span>
+                                  {(() => {
+                                    const prod = allProductsForCount.find((p) => p.id === item.product_id);
+                                    const stockCode = prod?.alternative_code;
+                                    if (!stockCode) return null;
+                                    return <span className="text-[10px] text-brand-orange/80">{stockCode}</span>;
+                                  })()}
+                                </div>
+                              </TableCell>
+                              <TableCell className="hidden md:table-cell text-right text-sm p-0">
+                                {(() => {
+                                  const prod = allProductsForCount.find((p) => p.id === item.product_id);
+                                  const price = prod ? Number(prod.sale_price || 0) : null;
+                                  const hasPrice = price !== null && price > 0;
+                                  const label = hasPrice ? brl(price as number) : "Definir";
+                                  return (
+                                    <Button
+                                      variant="ghost"
+                                      className={`h-8 px-2 w-full justify-end font-medium hover:bg-brand-orange/10 hover:text-brand-orange ${hasPrice ? "" : "text-brand-orange/80 italic"}`}
+                                      onClick={() => {
+                                        setConfirmingItem(item);
+                                        setEditQuantity(item.expected_quantity.toString());
+                                        setEditPrice(prod ? formatCurrency(Number(prod.sale_price || 0)) : "0,00");
+                                        setIsConfirmModalOpen(true);
+                                      }}
+                                    >
+                                      {label}
+                                    </Button>
+                                  );
+                                })()}
+                              </TableCell>
                               <TableCell className="hidden lg:table-cell text-sm text-muted-foreground">{item.verified_at ? dt(item.verified_at) : "—"}</TableCell>
                               <TableCell className="text-right">
                                 <Button 
                                   variant="ghost" 
                                   className="h-8 px-2 font-semibold hover:bg-brand-orange/10 hover:text-brand-orange"
                                   onClick={() => {
+                                    const prod = allProductsForCount.find((p) => p.id === item.product_id);
                                     setConfirmingItem(item);
                                     setEditQuantity(item.expected_quantity.toString());
+                                    setEditPrice(prod ? formatCurrency(Number(prod.sale_price || 0)) : "0,00");
                                     setIsConfirmModalOpen(true);
                                   }}
                                 >
@@ -1940,6 +2602,11 @@ function StockPage() {
                           ))}
                         </TableBody>
                       </Table>
+                    )}
+                    {teamFilter && totalCountPages > 1 && (
+                      <div className="mt-4 border-t pt-4">
+                        <SmartPagination currentPage={countPage} totalPages={totalCountPages} onPageChange={setCountPage} />
+                      </div>
                     )}
                   </div>
                 )}
@@ -2248,6 +2915,15 @@ function StockPage() {
         </DialogContent>
       </Dialog>
 
+      <StockCountChartsDialog
+        open={isChartsOpen}
+        onOpenChange={setIsChartsOpen}
+        count={selectedCount}
+        teams={teamsQ.data || []}
+        items={countItems}
+        products={allProductsForCount}
+        locations={locations}
+      />
       <Dialog open={isTeamModalOpen} onOpenChange={setIsTeamModalOpen}>
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
@@ -2287,7 +2963,8 @@ function StockPage() {
                             else if (newTeamLocations.length === 0) toast.error("Selecione pelo menos uma localização");
                           }
                         }} 
-                        disabled={!newTeamName.trim() || newTeamMembers.length === 0 || newTeamLocations.length === 0 || createTeamMut.isPending}
+                        disabled={isCountClosed || !newTeamName.trim() || newTeamMembers.length === 0 || newTeamLocations.length === 0 || createTeamMut.isPending}
+                        title={isCountClosed ? "Contagem finalizada — não é possível alterar" : undefined}
                       >
                         {createTeamMut.isPending ? (
                           <>
@@ -2459,13 +3136,28 @@ function StockPage() {
                                 size="sm" 
                                 variant="outline" 
                                 className="border-success text-success hover:bg-success/10 h-8" 
-                                onClick={() => updateTeamStatusMut.mutate({ teamId: team.id, status: "concluida" })}
-                                disabled={!hasLocations || updateTeamStatusMut.isPending}
+                                onClick={async () => {
+                                  const productsInTeamLocs = allProductsForCount.filter(p => (team.locations || []).includes(p.location_id || ""));
+                                  const teamItems = countItems.filter(it => productsInTeamLocs.some(p => p.id === it.product_id));
+                                  const verifiedCount = teamItems.filter(it => it.verified).length;
+                                  const pending = teamItems.length - verifiedCount;
+                                  const ok = await confirm({
+                                    title: `Finalizar equipe "${team.name}"?`,
+                                    description: pending > 0
+                                      ? `Esta equipe ainda tem ${pending} item(ns) pendente(s) de verificação (${verifiedCount}/${teamItems.length}). Ao finalizar, as localizações desta equipe ficarão bloqueadas para alterações.`
+                                      : `Todos os ${teamItems.length} item(ns) foram verificados. Ao finalizar, as localizações desta equipe ficarão bloqueadas para alterações.`,
+                                    confirmLabel: "Finalizar equipe",
+                                    variant: "default",
+                                  });
+                                  if (ok) updateTeamStatusMut.mutate({ teamId: team.id, status: "concluida" });
+                                }}
+                                disabled={isCountClosed || !hasLocations || updateTeamStatusMut.isPending}
+                                title={isCountClosed ? "Contagem finalizada — não é possível alterar" : undefined}
                               >
                                 <CheckCircle2 className="size-3.5 mr-1.5" /> Finalizar
                               </Button>
                             ) : (
-                              <Button size="sm" variant="outline" className="h-8" onClick={() => updateTeamStatusMut.mutate({ teamId: team.id, status: "aberta" })} disabled={updateTeamStatusMut.isPending}>
+                              <Button size="sm" variant="outline" className="h-8" onClick={() => updateTeamStatusMut.mutate({ teamId: team.id, status: "aberta" })} disabled={isCountClosed || updateTeamStatusMut.isPending} title={isCountClosed ? "Contagem finalizada — não é possível alterar" : undefined}>
                                 Reabrir
                               </Button>
                             )}
@@ -2473,7 +3165,7 @@ function StockPage() {
                               variant="ghost" 
                               size="icon" 
                               className="text-destructive h-8 w-8" 
-                              onClick={() => {
+                              onClick={async () => {
                                 const productsInTeamLocs = allProductsForCount.filter(p => (team.locations || []).includes(p.location_id || ""));
                                 const hasStarted = countItems.some(item => 
                                   productsInTeamLocs.some(p => p.id === item.product_id) && item.verified
@@ -2483,9 +3175,12 @@ function StockPage() {
                                   toast.error("Não é possível excluir uma equipe que já iniciou a contagem.");
                                   return;
                                 }
-                                deleteTeamMut.mutate(team.id);
+                                if (await confirm({ title: "Excluir equipe?", description: `A equipe "${team.name}" será removida desta contagem.`, confirmLabel: "Excluir", variant: "destructive" })) {
+                                  deleteTeamMut.mutate(team.id);
+                                }
                               }} 
-                              disabled={deleteTeamMut.isPending}
+                              disabled={isCountClosed || deleteTeamMut.isPending}
+                              title={isCountClosed ? "Contagem finalizada — não é possível alterar" : undefined}
                             >
                               <Trash2 className="size-4" />
                             </Button>
@@ -2641,9 +3336,13 @@ function StockPage() {
       <Dialog open={isConfirmModalOpen} onOpenChange={setIsConfirmModalOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Confirmar Conferência</DialogTitle>
+            <DialogTitle>{confirmingItem?.verified ? "Ajustar preço" : "Confirmar Conferência"}</DialogTitle>
             <DialogDescription>
-              Confirme a quantidade encontrada para <strong>{confirmingItem?.product_name}</strong>.
+              {confirmingItem?.verified ? (
+                <>Item já conferido. Apenas o <strong>preço de venda</strong> pode ser alterado.</>
+              ) : (
+                <>Confirme a quantidade encontrada para <strong>{confirmingItem?.product_name}</strong>.</>
+              )}
             </DialogDescription>
           </DialogHeader>
           <div className="py-4 space-y-4">
@@ -2654,7 +3353,9 @@ function StockPage() {
                 type="number"
                 value={editQuantity}
                 onChange={(e) => setEditQuantity(e.target.value)}
-                autoFocus
+                autoFocus={!confirmingItem?.verified}
+                disabled={!!confirmingItem?.verified}
+                onFocus={(e) => e.target.select()}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     handleConfirmVerification();
@@ -2663,15 +3364,152 @@ function StockPage() {
               />
               <p className="text-xs text-muted-foreground">
                 Esperado: {confirmingItem?.expected_quantity} {confirmingItem?.unit}
+                {confirmingItem?.verified ? " · Quantidade bloqueada (item já conferido)" : ""}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="confirm-price">Valor de venda do produto</Label>
+              <Input
+                id="confirm-price"
+                inputMode="numeric"
+                value={editPrice}
+                autoFocus={!!confirmingItem?.verified}
+                onChange={(e) => setEditPrice(maskCurrency(e.target.value))}
+                placeholder="0,00"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleConfirmVerification();
+                  }
+                }}
+              />
+              <p className="text-xs text-muted-foreground">
+                Será atualizado no cadastro do produto.
               </p>
             </div>
           </div>
+          <DialogFooter className="flex-col sm:flex-row sm:justify-between gap-2">
+            {(() => {
+              const teams = teamsQ.data || [];
+              const prod = confirmingItem ? allProductsForCount.find((p) => p.id === confirmingItem.product_id) : null;
+              const prodLoc = prod?.location_id || null;
+              const ownerTeam = prodLoc ? teams.find((t) => (t.locations || []).includes(prodLoc)) : null;
+              const isLocked = isCountClosed || ownerTeam?.status === "concluida";
+              return (
+                <div className="sm:mr-auto flex flex-col gap-1">
+                  <Button
+                    variant="secondary"
+                    onClick={openEditProductFromCount}
+                    disabled={isLocked}
+                    title={isLocked ? "Contagem finalizada — edição bloqueada" : undefined}
+                  >
+                    Editar produto
+                  </Button>
+                  {isLocked && (
+                    <p className="text-xs text-muted-foreground">
+                      A contagem da equipe "{ownerTeam?.name}" foi finalizada. Reabra-a para editar o produto.
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
+            <div className="flex gap-2 sm:ml-auto">
+              <Button variant="outline" onClick={() => setIsConfirmModalOpen(false)}>Cancelar</Button>
+              <Button onClick={handleConfirmVerification} disabled={isCountClosed} title={isCountClosed ? "Contagem finalizada — não é possível alterar" : undefined}>Confirmar</Button>
+            </div>
+          </DialogFooter>
+
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={editProductOpen} onOpenChange={(o) => { if (!o) { setEditProductOpen(false); setEditProductForm(null); } }}>
+        <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Editar produto</DialogTitle>
+            <DialogDescription>
+              Altere os dados do produto. Mudar a localização para uma área de outra equipe ativa transfere a contagem.
+            </DialogDescription>
+          </DialogHeader>
+          {editProductForm && (
+            <div className="grid gap-4 py-2 sm:grid-cols-2">
+              <div className="space-y-2 sm:col-span-2">
+                <Label>Nome</Label>
+                <Input
+                  value={editProductForm.name}
+                  onChange={(e) => setEditProductForm({ ...editProductForm, name: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>SKU</Label>
+                <Input
+                  value={editProductForm.sku}
+                  onChange={(e) => setEditProductForm({ ...editProductForm, sku: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Unidade</Label>
+                <Input
+                  value={editProductForm.unit}
+                  onChange={(e) => setEditProductForm({ ...editProductForm, unit: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2 sm:col-span-2">
+                <Label>Localização</Label>
+                <Select
+                  value={editProductForm.location_id || "__none"}
+                  onValueChange={(v) => setEditProductForm({ ...editProductForm, location_id: v === "__none" ? "" : v })}
+                >
+                  <SelectTrigger><SelectValue placeholder="Selecione" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">— Sem localização —</SelectItem>
+                    {locations.map((l) => (
+                      <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Preço de venda</Label>
+                <Input
+                  inputMode="numeric"
+                  value={editProductForm.sale_price}
+                  onChange={(e) => setEditProductForm({ ...editProductForm, sale_price: maskCurrency(e.target.value) })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Preço de custo</Label>
+                <Input
+                  inputMode="numeric"
+                  value={editProductForm.cost_price}
+                  onChange={(e) => setEditProductForm({ ...editProductForm, cost_price: maskCurrency(e.target.value) })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Estoque mínimo</Label>
+                <Input
+                  type="number"
+                  value={editProductForm.min_stock}
+                  onChange={(e) => setEditProductForm({ ...editProductForm, min_stock: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2 sm:col-span-2">
+                <Label>Descrição</Label>
+                <Input
+                  value={editProductForm.description}
+                  onChange={(e) => setEditProductForm({ ...editProductForm, description: e.target.value })}
+                />
+              </div>
+            </div>
+          )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsConfirmModalOpen(false)}>Cancelar</Button>
-            <Button onClick={handleConfirmVerification}>Confirmar</Button>
+            <Button variant="outline" onClick={() => { setEditProductOpen(false); setEditProductForm(null); }} disabled={savingProductEdit}>Cancelar</Button>
+            <Button onClick={handleSaveProductEdit} disabled={savingProductEdit}>
+              {savingProductEdit ? "Salvando..." : "Salvar"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+
 
       <Dialog open={!!finishingCountId} onOpenChange={(open) => !open && setFinishingCountId(null)}>
         <DialogContent>
@@ -2695,6 +3533,43 @@ function StockPage() {
             >
               {finishCountMut.isPending ? "Finalizando..." : "Confirmar e Finalizar"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={printOrderOpen} onOpenChange={(o) => { if (!o) { setPrintOrderOpen(false); setPrintOrderTarget(null); } }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Ordenar lista de contagem</DialogTitle>
+            <DialogDescription>
+              Escolha a ordenação para {printOrderTarget === "pdf" ? "o PDF" : "a impressão"}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <label className="flex items-center gap-2 p-3 border rounded-md cursor-pointer hover:bg-muted/50">
+              <input
+                type="radio"
+                name="print-order"
+                value="name"
+                checked={printOrderBy === "name"}
+                onChange={() => setPrintOrderBy("name")}
+              />
+              <span>Por nome do produto</span>
+            </label>
+            <label className="flex items-center gap-2 p-3 border rounded-md cursor-pointer hover:bg-muted/50">
+              <input
+                type="radio"
+                name="print-order"
+                value="location"
+                checked={printOrderBy === "location"}
+                onChange={() => setPrintOrderBy("location")}
+              />
+              <span>Por localização</span>
+            </label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setPrintOrderOpen(false); setPrintOrderTarget(null); }}>Cancelar</Button>
+            <Button onClick={handleConfirmPrintOrder}>Continuar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -1,11 +1,14 @@
+import { makePrefetchLoader } from "@/lib/route-prefetch";
 import { PageHeading } from "@/components/page-header";
 import { RefreshCw } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from "@/components/ui/tooltip";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useDeferredValue, useMemo, useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import { useInView } from "react-intersection-observer";
 import { useAuth } from "@/lib/auth-context";
+import { useValueVisibility } from "@/hooks/use-value-visibility";
 import {
   fetchProducts,
   fetchPartners,
@@ -18,23 +21,34 @@ import {
   isSuperAdmin,
   fetchMyMembership,
   fetchTeam,
-  cancelSale,
+  
   deleteSale,
+  cancelSale,
   updateSaleItems,
+  editSaleFull,
   hasPermission,
   finalizeOpenSale,
+  reopenSaleToCart,
   updateProduct,
   fetchCurrentOpenRegister,
   addCashTransaction,
   fetchProductReferencesByCompany,
 } from "@/lib/db";
+import { getCustomerCreditBalance, applyCustomerCredit } from "@/lib/customer-credits";
+import { CancelSaleDialog } from "@/components/cancel-sale-dialog";
 import { buildRefsSearchMap, buildRefsBrandMap, productMatchesBrand } from "@/lib/product-search";
+import { SalePaymentsEditor, type PaymentRow, findVoucherMethodId, redistributeAfterVoucher } from "@/components/sale-payments-editor";
+import type { SalePaymentInput } from "@/lib/db-types";
+import { BarcodeScanInput } from "@/components/barcode-scan-input";
 import { generateStockCode, validateStockCode } from "@/lib/stock-code";
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+
+import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -48,19 +62,12 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableFooter,
   TableHead,
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
 import { SmartPagination } from "@/components/smart-pagination";
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Plus,
@@ -72,6 +79,7 @@ import {
   AlertCircle,
   ArrowDownUp,
   Eye,
+  EyeOff,
   User,
   CalendarClock,
   CreditCard,
@@ -81,6 +89,12 @@ import {
   Pencil,
   Ban,
   History,
+  Printer,
+  Loader2,
+  ArrowLeft,
+  MailCheck,
+  MailX,
+  MailWarning,
 } from "lucide-react";
 import {
   Dialog,
@@ -91,6 +105,13 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerFooter,
+} from "@/components/ui/drawer";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -111,10 +132,22 @@ import { cn, normalize, compareProductNames } from "@/lib/utils";
 import type { Product } from "@/lib/db-types";
 import { ClampedDescription } from "@/components/clamped-description";
 import { useConfirm } from "@/components/confirm-dialog";
+import { OverdueTasksDialog, useOverdueTasks } from "@/components/overdue-tasks-dialog";
+
 import { useCashRegister, PaymentMethodType } from "@/hooks/use-cash-register";
+import { SangriaButton } from "@/components/sangria-actions";
 import { PrintPreviewDialog } from "@/components/print-preview-dialog";
+import { SaleProgressDialog, type ProgressStep } from "@/components/sale-progress-dialog";
 import { AdminAuthDialog } from "@/components/admin-auth-dialog";
+import { qzEnabled, qzPrinterName, qzPrintHtml80mm, qzConnect, qzPrintTestReceipt } from "@/lib/qz-print";
+import { receiptStyle } from "@/lib/receipt-style";
 import { EditSaleDialog } from "@/components/edit-sale-dialog";
+import { SaleEditTimeline } from "@/components/sale-edit-timeline";
+import { NfceButton } from "@/components/nfce-button";
+import { useServerFn } from "@tanstack/react-start";
+import { emitNfce, fetchNfceReceipt80mm } from "@/lib/nfce.functions";
+import { printNfceReceipt80mm } from "@/lib/print-danfe";
+
 import { useStockReservation } from "@/hooks/use-stock-reservation";
 import {
   Carousel,
@@ -124,7 +157,18 @@ import {
   CarouselPrevious,
 } from "@/components/ui/carousel";
 
+type VendasSearch = { from?: string; to?: string; rid?: string; close?: string };
 export const Route = createFileRoute("/app/vendas")({
+  validateSearch: (search: Record<string, unknown>): VendasSearch => {
+    const out: VendasSearch = {};
+    if (typeof search.from === "string") out.from = search.from;
+    if (typeof search.to === "string") out.to = search.to;
+    if (typeof search.rid === "string") out.rid = search.rid;
+    if (typeof search.close === "string") out.close = search.close;
+    return out;
+  },
+
+  loader: makePrefetchLoader(["clients", "paymentMethods", "locations"]),
   component: SalesPage,
 });
 
@@ -136,6 +180,22 @@ interface CartItem {
   unit_price: number;
   stock: number;
   description?: string | null;
+}
+
+interface OpenCartSaleItem {
+  product_id: string;
+  quantity: number | string;
+  unit_price: number | string;
+  products?: { name?: string | null; sku?: string | null } | null;
+}
+
+interface OpenCartSale {
+  id: string;
+  number?: number | string | null;
+  status?: string | null;
+  customer_id?: string | null;
+  discount?: number | string | null;
+  sale_items?: OpenCartSaleItem[];
 }
 
 type DiscountMode = "valor" | "percentual";
@@ -152,6 +212,90 @@ const emptyPaymentMethod: PaymentMethodForm = {
   active: true,
 };
 
+function ProductPickerSkeleton() {
+  return (
+    <div className="divide-y">
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div key={i} className="w-full px-5 py-3 flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton className="h-4 w-3/4" />
+            <div className="flex gap-2">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-3 w-24" />
+            </div>
+          </div>
+          <Skeleton className="h-4 w-16 shrink-0" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CartItemSkeleton() {
+  return (
+    <TableRow>
+      <TableCell className="align-top">
+        <Skeleton className="h-4 w-32" />
+        <Skeleton className="h-3 w-20 mt-1" />
+      </TableCell>
+      <TableCell>
+        <Skeleton className="h-8 w-16" />
+      </TableCell>
+      <TableCell className="text-right">
+        <Skeleton className="h-8 w-24 ml-auto" />
+      </TableCell>
+      <TableCell className="text-right">
+        <Skeleton className="h-4 w-16 ml-auto" />
+      </TableCell>
+      <TableCell>
+        <Skeleton className="h-8 w-8" />
+      </TableCell>
+    </TableRow>
+  );
+}
+
+function CartItemSkeletonMobile() {
+  return (
+    <div className="rounded-md border border-border p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1 space-y-1">
+          <Skeleton className="h-4 w-3/4" />
+          <Skeleton className="h-3 w-20" />
+        </div>
+        <Skeleton className="h-8 w-8 shrink-0" />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Skeleton className="h-8 w-full" />
+        <Skeleton className="h-8 w-full" />
+      </div>
+    </div>
+  );
+}
+
+function CartDialogItemSkeleton() {
+  return (
+    <div className="bg-muted/30 rounded-xl border border-muted-foreground/10 p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 space-y-1">
+          <Skeleton className="h-4 w-3/4" />
+          <Skeleton className="h-3 w-20" />
+        </div>
+        <Skeleton className="h-8 w-8 shrink-0" />
+      </div>
+      <div className="flex items-center gap-4">
+        <div className="flex-1 space-y-1">
+          <Skeleton className="h-3 w-16" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+        <div className="flex-1 space-y-1 text-right">
+          <Skeleton className="h-3 w-12 ml-auto" />
+          <Skeleton className="h-4 w-16 ml-auto" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SalesPage() {
   const { currentCompanyId, user } = useAuth();
   const cid = currentCompanyId!;
@@ -159,6 +303,17 @@ function SalesPage() {
   const navigate = useNavigate();
   const confirm = useConfirm();
   const [finalizeStep, setFinalizeStep] = useState<string | null>(null);
+  const [progressOpen, setProgressOpen] = useState(false);
+  const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
+  const [progressSaleId, setProgressSaleId] = useState<string | null>(null);
+  const updateProgressStep = (id: string, patch: Partial<ProgressStep>) =>
+    setProgressSteps((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  const startProgress = (steps: ProgressStep[], saleId?: string) => {
+    setProgressSteps(steps);
+    setProgressSaleId(saleId ?? null);
+    setProgressOpen(true);
+  };
+
 
   const superAdminQ = useQuery({ queryKey: ["is-super-admin"], queryFn: isSuperAdmin });
   const membershipQ = useQuery({
@@ -166,7 +321,7 @@ function SalesPage() {
     queryFn: async () => {
       const m = await fetchMyMembership(cid);
       if (!m || !user?.id) return m;
-      const { data: prof } = await appwrite
+      const { data: prof } = await supabase
         .from("profiles")
         .select("name")
         .eq("id", user.id)
@@ -216,7 +371,7 @@ function SalesPage() {
   const companySettingsQ = useQuery({
     queryKey: ["company-settings", cid],
     queryFn: async () => {
-      const { data } = await appwrite
+      const { data } = await supabase
         .from("company_settings" as any)
         .select("*")
         .eq("company_id", cid)
@@ -244,10 +399,22 @@ function SalesPage() {
   const fiscalSettingsQ = useQuery({
     queryKey: ["fiscal-settings", cid],
     queryFn: async () => {
-      const { data } = await appwrite
+      const { data } = await supabase
         .from("fiscal_settings")
         .select("*")
         .eq("company_id", cid)
+        .maybeSingle();
+      return data;
+    },
+    enabled: !!cid,
+  });
+  const companyInfoQ = useQuery({
+    queryKey: ["company-info", cid],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("companies")
+        .select("name, phone")
+        .eq("id", cid)
         .maybeSingle();
       return data;
     },
@@ -281,6 +448,9 @@ function SalesPage() {
   const [currentSaleId, setCurrentSaleId] = useState<string | null>(() => {
     return localStorage.getItem(`${SAVED_SALE_KEY}_saleId`);
   });
+  const [reopenedFromNumber, setReopenedFromNumber] = useState<string | null>(() => {
+    return localStorage.getItem(`${SAVED_SALE_KEY}_reopenedNumber`);
+  });
 
   const validateSessionAction = () => {
     if (items.length > 0) {
@@ -295,6 +465,9 @@ function SalesPage() {
       setActiveRegisterUserId(user.id);
     }
   }, [user?.id, activeRegisterUserId]);
+
+  const { hidden: cashHidden, canToggle: cashCanToggle, toggle: cashToggle, mask: cashMask } = useValueVisibility("fluxo-caixa");
+
 
   const {
     currentRegister,
@@ -312,11 +485,25 @@ function SalesPage() {
     isCancelling,
   } = useCashRegister(activeRegisterUserId);
 
+  const [isCartHydrated, setIsCartHydrated] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setIsCartHydrated(true), 0);
+    return () => clearTimeout(t);
+  }, []);
+
+
   const availableUsers = useMemo(() => {
     if (!teamQ.data || !allOpenRegisters) return [];
     const openUserIds = new Set(allOpenRegisters.map((r: any) => r.user_id_open));
-    return teamQ.data.filter((m) => !openUserIds.has(m.user_id));
+    return teamQ.data.filter((m) => !openUserIds.has(m.user_id) && !(m as any).is_blocked);
   }, [teamQ.data, allOpenRegisters]);
+
+  // Pré-seleciona o usuário logado no dropdown de abertura de caixa
+  useEffect(() => {
+    if (!selectedOpeningUserId && user?.id && availableUsers.some((m) => m.user_id === user.id)) {
+      setSelectedOpeningUserId(user.id);
+    }
+  }, [user?.id, availableUsers, selectedOpeningUserId]);
 
   const isCashOpen = currentRegister?.status === "OPEN";
   const isLocked = currentRegister?.is_locked;
@@ -325,25 +512,71 @@ function SalesPage() {
     queryKey: ["current-session-sales", cid, currentRegister?.id],
     queryFn: async () => {
       if (!isCashOpen || !currentRegister) return [];
-      const { data, error } = await appwrite
+      const { data, error } = await supabase
         .from("sales")
-        .select("*, profiles(name)")
+        .select(
+          "*, profiles(name), sale_items(id, product_id, quantity, unit_price, total, products(name, sku, unit)), fiscal_notes(id,status)",
+        )
         .eq("company_id", cid)
         .eq("created_by", currentRegister.user_id_open)
         .gte("created_at", currentRegister.opened_at)
-        .eq("status", "concluida")
+        .in("status", ["concluida", "cancelada"])
         .order("created_at", { ascending: false });
       if (error) throw error;
       return data;
     },
     enabled: isCashOpen && !!cid && !!user?.id,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
+
+  const currentSessionOpenSalesQ = useQuery({
+    queryKey: ["current-session-open-sales", cid, currentRegister?.id],
+    queryFn: async () => {
+      if (!isCashOpen || !currentRegister) return [];
+      const { data, error } = await supabase
+        .from("sales")
+        .select("id,status,created_at")
+        .eq("company_id", cid)
+        .eq("created_by", currentRegister.user_id_open)
+        .gte("created_at", currentRegister.opened_at)
+        .eq("status", "aberta");
+      if (error) throw error;
+      return data;
+    },
+    enabled: isCashOpen && !!cid && !!user?.id,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
+
+  const currentSessionSaleIds = useMemo(
+    () => ((currentSessionSalesQ.data as any[]) || []).map((s) => s.id).filter(Boolean),
+    [currentSessionSalesQ.data],
+  );
+
+  const currentSessionFiscalNotesQ = useQuery({
+    queryKey: ["current-session-fiscal-notes", cid, currentRegister?.id, currentSessionSaleIds],
+    queryFn: async () => {
+      if (!isCashOpen || !currentRegister || currentSessionSaleIds.length === 0) return [];
+      const { data, error } = await supabase
+        .from("fiscal_notes")
+        .select("id,status,sale_id")
+        .eq("company_id", cid)
+        .in("sale_id", currentSessionSaleIds)
+        .in("status", ["autorizada", "processando", "cancelada", "rejeitada"]);
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: isCashOpen && !!cid && !!currentRegister && currentSessionSaleIds.length > 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
   });
 
   const currentTransactionsQ = useQuery({
     queryKey: ["cash-transactions", currentRegister?.id],
     queryFn: async () => {
       if (!currentRegister) return [];
-      const { data, error } = await (appwrite as any)
+      const { data, error } = await (supabase as any)
         .from("cash_transactions")
         .select("*")
         .eq("cash_register_id", currentRegister.id)
@@ -353,30 +586,80 @@ function SalesPage() {
       return data || [];
     },
     enabled: !!currentRegister?.id,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
   });
 
-  const currentCashBalance = useMemo(() => {
-    if (!currentRegister) return 0;
+  const currentSessionCashSalesQ = useQuery({
+    queryKey: ["current-session-cash-sales", cid, currentRegister?.id],
+    queryFn: async () => {
+      if (!isCashOpen || !currentRegister || !cid) return [];
+      const { data, error } = await (supabase as any)
+        .from("sales")
+        .select("id,status,total,type,cash_register_id,created_by,created_at,payment_method")
+        .eq("company_id", cid)
+        .gte("created_at", currentRegister.opened_at)
+        .in("status", ["concluida", "cancelada"])
+        .or(`cash_register_id.eq.${currentRegister.id},created_by.eq.${currentRegister.user_id_open}`)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: isCashOpen && !!cid && !!currentRegister?.id,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
+
+  const currentCashSummary = useMemo(() => {
+    if (!currentRegister) {
+      return { openingBalance: 0, grossSales: 0, returns: 0, withdrawals: 0, netSales: 0, balance: 0 };
+    }
     const openingBalance = Number(currentRegister.initial_balance || 0);
+    const sales = (currentSessionCashSalesQ.isSuccess
+      ? (currentSessionCashSalesQ.data as any[])
+      : (currentSessionSalesQ.data as any[])) || [];
+    const saleById = new Map(sales.map((s) => [String(s.id), s]));
+    const hasSalesSnapshot = currentSessionCashSalesQ.isSuccess || currentSessionSalesQ.isSuccess;
+    const grossSales = sales
+      .filter((s) => s.status === "concluida" && s.type !== "devolucao")
+      .reduce((acc, s) => acc + Number(s.total || 0), 0);
+    const returns = sales
+      .filter((s) => s.type === "devolucao" && s.status === "concluida")
+      .reduce((acc, s) => acc + Number(s.total || 0), 0);
+    const withdrawals = ((currentTransactionsQ.data as any[]) || [])
+      .filter((t) => t.type === "OUT" && t.category === "WITHDRAWAL")
+      .reduce((acc, t) => acc + Number(t.amount || 0), 0);
     const txTotal =
       (currentTransactionsQ.data as any[])?.reduce((acc, t) => {
         // O financeiro só trabalha com vendas efetivadas (concluídas).
         // Se a transação for do tipo SALE, verificamos se a venda está concluída.
         if (t.category === "SALE" && t.reference_id) {
-          const sale = currentSessionSalesQ.data?.find((s) => s.id === t.reference_id);
-          if (currentSessionSalesQ.isSuccess && (!sale || sale.status !== "concluida")) {
+          const sale = saleById.get(String(t.reference_id));
+          if (hasSalesSnapshot && (!sale || sale.status !== "concluida" || sale.type === "devolucao")) {
             return acc;
           }
         }
         return acc + (t.type === "IN" ? Number(t.amount) : -Number(t.amount));
       }, 0) || 0;
-    return openingBalance + txTotal;
+    const netSales = grossSales - returns - withdrawals;
+    return {
+      openingBalance,
+      grossSales,
+      returns,
+      withdrawals,
+      netSales,
+      balance: openingBalance + txTotal - returns,
+    };
   }, [
     currentRegister,
     currentTransactionsQ.data,
+    currentSessionCashSalesQ.data,
+    currentSessionCashSalesQ.isSuccess,
     currentSessionSalesQ.data,
     currentSessionSalesQ.isSuccess,
   ]);
+  const currentCashBalance = currentCashSummary.balance;
+
 
   const [openingBalanceRaw, setOpeningBalanceRaw] = useState("0,00");
   const [showCloseModal, setShowCloseModal] = useState(false);
@@ -385,6 +668,33 @@ function SalesPage() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [managerWantsToOpen, setManagerWantsToOpen] = useState(false);
   const [viewingProductDesc, setViewingProductDesc] = useState<any>(null);
+  const lastClosingKey = cid ? `ap.lastClosingHtml.${cid}` : "ap.lastClosingHtml";
+  const [lastClosingHtml, setLastClosingHtmlState] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return localStorage.getItem(lastClosingKey);
+    } catch {
+      return null;
+    }
+  });
+  const setLastClosingHtml = (html: string | null) => {
+    setLastClosingHtmlState(html);
+    try {
+      if (html) localStorage.setItem(lastClosingKey, html);
+      else localStorage.removeItem(lastClosingKey);
+    } catch {
+      /* noop */
+    }
+  };
+  useEffect(() => {
+    try {
+      setLastClosingHtmlState(localStorage.getItem(lastClosingKey));
+    } catch {
+      /* noop */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastClosingKey]);
+  const [closingAuthOpen, setClosingAuthOpen] = useState(false);
 
   const handleOpenRegister = async () => {
     if (!canOpenCash) {
@@ -408,11 +718,130 @@ function SalesPage() {
     setManagerWantsToOpen(false);
   };
 
-  const handleCloseRegister = async () => {
-    if (!validateSessionAction()) return;
+  const printClosing80mm = async (html: string) => {
+    try {
+      if (qzEnabled(cid) && qzPrinterName(cid)) {
+        await qzPrintHtml80mm(html, { widthPx: printSettings.receiptWidth || "280" });
+        toast.success("Fechamento enviado para a impressora.");
+      } else {
+        const win = window.open("", "_blank");
+        if (!win) throw new Error("Bloqueio de popup impede a impressão.");
+        win.document.write(
+          html +
+            `<script>window.onload=function(){window.print();setTimeout(()=>window.close(),500);};<\/script>`,
+        );
+        win.document.close();
+      }
+    } catch (e: any) {
+      toast.error(e?.message || "Falha ao imprimir o fechamento.", {
+        duration: 15000,
+        action: { label: "Reimprimir", onClick: () => void printClosing80mm(html) },
+      });
+    }
+  };
 
+  const buildClosingHtmlFromRegister = (
+    reg: any,
+    sales: any[],
+    operatorEmail?: string | null,
+    opts?: { includeSales?: boolean; reprint?: boolean },
+  ) => {
+    const includeSales = opts?.includeSales !== false;
+    const isReprint = opts?.reprint === true;
+    const validSales = sales.filter((s: any) => s.status !== "cancelada");
+    const methodsSummary = validSales.reduce((acc: any, s: any) => {
+      const m = (s.payment_method || "Dinheiro").toUpperCase();
+      acc[m] = (acc[m] || 0) + Number(s.total);
+      return acc;
+    }, {});
+    const activeMethods = Object.entries(methodsSummary)
+      .filter(([, amount]) => (amount as number) !== 0)
+      .sort((a, b) => (b[1] as number) - (a[1] as number));
+    const totalVendas = validSales.reduce((a, s) => a + Number(s.total || 0), 0);
+    const closedAt = reg.closed_at ? new Date(reg.closed_at).toLocaleString("pt-BR") : new Date().toLocaleString("pt-BR");
+    const salesHtml = includeSales
+      ? `
+      <div class="bold">VENDAS DETALHADAS</div>
+      ${sales.length === 0 ? '<div class="center">Nenhuma venda na sessão</div>' : sales.slice().reverse().map((s: any) => {
+        const tm = new Date(s.created_at).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+        const num = s.number ?? s.sale_number ?? s.id?.slice(0,8) ?? "-";
+        const isCancelled = s.status === "cancelada";
+        const wrapperStyle = isCancelled ? 'margin-top:6px;color:#b00020;text-decoration:line-through' : 'margin-top:6px';
+        const tag = isCancelled ? ' [CANCELADA]' : '';
+        const items = (s.sale_items || []) as any[];
+        const itemsHtml = items.map((it) => {
+          const name = it?.products?.name || "Item";
+          const qty = Number(it.quantity || 0);
+          const unit = it?.products?.unit || "un";
+          const tot = Number(it.total || 0);
+          return `<div class="row"><span>${qty} ${unit} x ${name}</span><span>${brl(tot)}</span></div>`;
+        }).join("");
+        return `<div style="${wrapperStyle}"><div class="row bold"><span>#${num} ${tm}${tag}</span><span>${brl(Number(s.total||0))}</span></div><div style="font-size:10px">Pgto: ${s.payment_method || "-"}</div>${itemsHtml}</div>`;
+      }).join("")}
+      <div class="divider"></div>`
+      : `<div class="center" style="font-size:10px">Total de vendas: ${validSales.length}</div><div class="divider"></div>`;
+    return `
+      <html><head><title>Resumo de Fechamento de Caixa</title>
+      <style>${receiptStyle({ widthPx: printSettings.receiptWidth || "280", fontSizePx: printSettings.fontSizePx, lineHeight: printSettings.lineHeight, boldStrength: printSettings.boldStrength })}</style>
+      </head><body>
+      <h2>FECHAMENTO DE CAIXA</h2>
+      <div class="center">Data: ${closedAt}</div>
+      <div class="center">Operador: ${operatorEmail || "N/A"}</div>
+      ${isReprint ? '<div class="center" style="font-size:10px">(reimpressão)</div>' : ''}
+      <div class="divider"></div>
+      ${salesHtml}
+      <div class="bold">RESUMO POR MÉTODO</div>
+      ${activeMethods.map(([m, a]) => `<div class="row"><span>${m}:</span><span>${brl(a as number)}</span></div>`).join("")}
+      <div class="divider"></div>
+      <div class="row bold"><span>SALDO INICIAL:</span><span>${brl(Number(reg.initial_balance||0))}</span></div>
+      <div class="row bold"><span>TOTAL VENDAS:</span><span>${brl(totalVendas)}</span></div>
+      <div class="row bold mt"><span>SALDO TOTAL:</span><span>${brl(Number(reg.initial_balance||0) + totalVendas)}</span></div>
+      <div class="footer"><div style="margin-top:30px;border-top:1px solid #000;width:80%;margin-left:auto;margin-right:auto"></div><div>Assinatura do Operador</div></div>
+      </body></html>`;
+  };
+
+
+  const reprintLastClosing = async () => {
+    try {
+      if (lastClosingHtml) {
+        await printClosing80mm(lastClosingHtml);
+        return;
+      }
+      if (!cid) return;
+      const { data: reg, error } = await supabase
+        .from("cash_registers")
+        .select("id, opened_at, closed_at, initial_balance, user_id_open")
+        .eq("company_id", cid)
+        .eq("status", "CLOSED")
+        .order("closed_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      if (!reg) {
+        toast.error("Nenhum fechamento anterior encontrado.");
+        return;
+      }
+      const { data: sales, error: e2 } = await supabase
+        .from("sales")
+        .select("id, created_at, total, payment_method, status, sale_items(id, quantity, unit_price, total, products(name, sku, unit))")
+        .eq("company_id", cid)
+        .eq("created_by", reg.user_id_open)
+        .gte("created_at", reg.opened_at)
+        .lte("created_at", reg.closed_at)
+        .neq("status", "cancelada")
+        .order("created_at", { ascending: true });
+      if (e2) throw e2;
+      const html = buildClosingHtmlFromRegister(reg, sales || [], user?.email);
+      setLastClosingHtml(html);
+      await printClosing80mm(html);
+    } catch (e: any) {
+      toast.error(e?.message || "Falha ao reimprimir fechamento.");
+    }
+  };
+
+  const performCloseAndPrint = async () => {
     const openSalesCount =
-      currentSessionSalesQ.data?.filter((s) => s.status === "aberta").length || 0;
+      currentSessionOpenSalesQ.data?.length || 0;
     if (openSalesCount > 0) {
       toast.error(
         `Não é possível fechar o caixa pois existem ${openSalesCount} venda(s) em aberto.`,
@@ -420,32 +849,34 @@ function SalesPage() {
       return;
     }
 
-    if (!password && !hasSpecialAccess) {
-      toast.error("Digite sua senha para confirmar.");
-      return;
-    }
-
     setIsVerifying(true);
     try {
-      if (!hasSpecialAccess) {
-        const { error: authError } = await appwrite.auth.signInWithPassword({
-          email: user?.email!,
-          password: password,
-        });
-
-        if (authError) throw new Error("Senha incorreta.");
+      // Sangria de recolhimento: zera o saldo de caixa deixando o saldo inicial
+      const initial = Number(currentRegister?.initial_balance || 0);
+      const remaining = Number((currentCashBalance - initial).toFixed(2));
+      if (remaining > 0) {
+        try {
+          await addTransaction({
+            type: "OUT",
+            category: "WITHDRAWAL",
+            amount: remaining,
+            paymentMethod: "CASH",
+            description: "Recolhimento de fechamento — saldo consolidado",
+          });
+        } catch (e: any) {
+          // não bloqueia o fechamento, apenas avisa
+          toast.warning(`Não foi possível registrar a sangria final: ${e?.message || e}`);
+        }
       }
 
       const counts = { cash: 0, pix: 0, card: 0 };
       let totalInformed = 0;
-
       paymentMethods
         .filter((pm) => pm.active)
         .forEach((pm) => {
           const raw = methodCounts[pm.id] || "0,00";
           const val = parseCurrencyInput(raw);
           totalInformed += val;
-
           const name = pm.name.toLowerCase();
           if (name.includes("dinheiro") || name === "cash") counts.cash += val;
           else if (name.includes("pix")) counts.pix += val;
@@ -455,21 +886,57 @@ function SalesPage() {
             name.includes("débito") ||
             name.includes("card")
           ) {
-            // You could split card between credit/debit if needed, but the current state uses counts.card
             counts.card += val;
           } else {
-            // Fallback
             counts.cash += val;
           }
         });
 
-      await closeRegister({
-        informedBalance: totalInformed,
-        counts,
-      });
+      const regSnapshot = currentRegister;
+      await closeRegister({ informedBalance: totalInformed, counts });
 
+      // Buscar dados frescos para montar o fechamento completo (evita usar cache vazio)
+      let html = getClosingHtml();
+      let salesForCtx: any[] = [];
+      let regForCtx: any = regSnapshot;
+      try {
+        if (regSnapshot?.id && cid) {
+          const { data: regFresh } = await supabase
+            .from("cash_registers")
+            .select("id, opened_at, closed_at, initial_balance, user_id_open")
+            .eq("id", regSnapshot.id)
+            .maybeSingle();
+          const reg = regFresh || regSnapshot;
+          const { data: salesFresh } = await supabase
+            .from("sales")
+            .select(
+              "id, number, created_at, total, payment_method, status, sale_items(id, quantity, unit_price, total, products(name, sku, unit))",
+            )
+            .eq("company_id", cid)
+            .eq("created_by", reg.user_id_open)
+            .gte("created_at", reg.opened_at)
+            .lte("created_at", reg.closed_at || new Date().toISOString())
+            .in("status", ["concluida", "cancelada"])
+            .order("created_at", { ascending: true });
+          salesForCtx = salesFresh || [];
+          regForCtx = reg;
+          html = buildClosingHtmlFromRegister(reg, salesForCtx, user?.email, { includeSales: true });
+        }
+      } catch (fetchErr) {
+        console.warn("Falha ao buscar dados frescos do fechamento, usando cache.", fetchErr);
+      }
+
+      setLastClosingHtml(html);
       setShowCloseModal(false);
       setPassword("");
+      const nowStr = new Date().toLocaleString("pt-BR");
+      setPreviewTitle(`Fechamento — ${nowStr}`);
+      setPreviewContent(html);
+      setPendingClosingHtml(html);
+      setPendingClosingCtx({ reg: regForCtx, sales: salesForCtx, operatorEmail: user?.email });
+      setIncludeSalesClosing(true);
+      setShowClosingPreview(true);
+
     } catch (err: any) {
       toast.error(err.message);
     } finally {
@@ -477,11 +944,20 @@ function SalesPage() {
     }
   };
 
+  const handleCloseRegister = () => {
+    if (!validateSessionAction()) return;
+    if (hasSpecialAccess) {
+      void performCloseAndPrint();
+    } else {
+      setClosingAuthOpen(true);
+    }
+  };
+
   const getClosingHtml = () => {
     if (!currentRegister) return "Nenhum caixa aberto";
 
     // Reutilizando a lógica do app.fechamento-caixa.tsx para consistência
-    const sales = currentSessionSalesQ.data || [];
+      const sales = (currentSessionSalesQ.data || []).filter((s) => s.status === "concluida");
 
     // Agrupar por método
     const methodsSummary = sales.reduce((acc: any, s: any) => {
@@ -501,23 +977,33 @@ function SalesPage() {
       <html>
         <head>
           <title>Resumo de Fechamento de Caixa</title>
-          <style>
-            body { font-family: 'Courier New', Courier, monospace; font-size: 12px; padding: 10px; width: 280px; margin: 0 auto; }
-            h2 { text-align: center; margin-bottom: 5px; font-size: 16px; }
-            .divider { border-bottom: 1px dashed #000; margin: 8px 0; }
-            .row { display: flex; justify-content: space-between; }
-            .bold { font-weight: bold; }
-            .center { text-align: center; }
-            .mt { margin-top: 10px; }
-            table { width: 100%; font-size: 10px; }
-            th { text-align: left; border-bottom: 1px solid #000; }
-            .footer { margin-top: 20px; text-align: center; font-size: 10px; }
-          </style>
+          <style>${receiptStyle({ widthPx: printSettings.receiptWidth || "280", fontSizePx: printSettings.fontSizePx, lineHeight: printSettings.lineHeight, boldStrength: printSettings.boldStrength })}</style>
         </head>
         <body>
           <h2>FECHAMENTO DE CAIXA</h2>
           <div class="center">Data: ${new Date().toLocaleString("pt-BR")}</div>
           <div class="center">Operador: ${user?.email || "N/A"}</div>
+          <div class="divider"></div>
+          <div class="bold">VENDAS DETALHADAS</div>
+          ${sales.length === 0 ? '<div class="center">Nenhuma venda na sessão</div>' : sales.slice().reverse().map((s: any) => {
+            const dt = new Date(s.created_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+            const num = s.sale_number || s.id?.slice(0, 8) || "-";
+            const items = (s.sale_items || []) as any[];
+            const itemsHtml = items.map((it) => {
+              const name = it?.products?.name || "Item";
+              const qty = Number(it.quantity || 0);
+              const unit = it?.products?.unit || "un";
+              const tot = Number(it.total || 0);
+              return `<div class="row"><span>${qty} ${unit} x ${name}</span><span>${brl(tot)}</span></div>`;
+            }).join("");
+            return `
+              <div style="margin-top:6px;">
+                <div class="row bold"><span>#${num} ${dt}</span><span>${brl(Number(s.total || 0))}</span></div>
+                <div style="font-size:10px;">Pgto: ${(s.payment_method || "-")}</div>
+                ${itemsHtml}
+              </div>
+            `;
+          }).join("")}
           <div class="divider"></div>
           <div class="bold">RESUMO POR MÉTODO</div>
           ${activeMethods.map(([method, amount]) => `<div class="row"><span>${method}:</span> <span>${brl(amount as number)}</span></div>`).join("")}
@@ -535,33 +1021,38 @@ function SalesPage() {
   };
 
   const handlePrintClosing = () => {
-    const win = window.open("", "_blank");
-    if (!win) return;
-    win.document.write(
-      getClosingHtml() +
-        `<script>window.onload = function() { window.print(); setTimeout(() => window.close(), 500); };</script>`,
-    );
-    win.document.close();
+    void printClosing80mm(getClosingHtml());
   };
 
-  const cancelSaleMut = useMutation({
-    mutationFn: ({ id, reason }: { id: string; reason: string }) => cancelSale(id, reason),
-    onSuccess: (_, variables) => {
-      toast.success("Venda cancelada com sucesso!");
-      if (variables.id === currentSaleId) {
-        setItems([]);
-        setCurrentSaleId(null);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_items`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_saleId`);
-        stockReservation.releaseAll();
-      }
-      qc.invalidateQueries({ queryKey: ["sales", cid] });
-      qc.invalidateQueries({ queryKey: ["sales-paginated", cid] });
-      qc.invalidateQueries({ queryKey: ["cash-transactions", currentRegister?.id] });
-      qc.invalidateQueries({ queryKey: ["products", cid] });
-    },
-    onError: (e: any) => toast.error(e.message),
-  });
+  // Prévia/teste do cupom de fechamento, usando exatamente as configurações
+  // de impressão salvas em Configurações → Impressão.
+  const handleTestClosingReceipt = () => {
+    const html = currentRegister
+      ? getClosingHtml().replace(
+          "<h2>FECHAMENTO DE CAIXA</h2>",
+          '<h2>FECHAMENTO DE CAIXA</h2><div class="center" style="font-size:10px">*** PRÉVIA / TESTE ***</div>',
+        )
+      : `<html><head><title>Prévia de Fechamento</title><style>${receiptStyle({ widthPx: printSettings.receiptWidth || "280", fontSizePx: printSettings.fontSizePx, lineHeight: printSettings.lineHeight, boldStrength: printSettings.boldStrength })}</style></head><body>
+          <h2>FECHAMENTO DE CAIXA</h2>
+          <div class="center" style="font-size:10px">*** PRÉVIA / TESTE ***</div>
+          <div class="center">Data: ${new Date().toLocaleString("pt-BR")}</div>
+          <div class="center">Operador: ${user?.email || "N/A"}</div>
+          <div class="divider"></div>
+          <div class="bold">VENDAS DETALHADAS</div>
+          <div style="margin-top:6px"><div class="row bold"><span>#0001 10:00</span><span>${brl(58)}</span></div><div style="font-size:10px">Pgto: DINHEIRO</div><div class="row"><span>1 un x Produto exemplo</span><span>${brl(58)}</span></div></div>
+          <div class="divider"></div>
+          <div class="bold">RESUMO POR MÉTODO</div>
+          <div class="row"><span>DINHEIRO:</span><span>${brl(58)}</span></div>
+          <div class="divider"></div>
+          <div class="row bold"><span>SALDO INICIAL:</span><span>${brl(100)}</span></div>
+          <div class="row bold"><span>TOTAL VENDAS:</span><span>${brl(58)}</span></div>
+          <div class="row bold mt"><span>SALDO TOTAL:</span><span>${brl(158)}</span></div>
+          <div class="footer"><div class="signature"></div><div>Assinatura do Operador</div></div>
+        </body></html>`;
+    void printClosing80mm(html);
+  };
+
+  // Cancelamento de venda agora usa o CancelSaleDialog (motivo + escolha ressarcir/crédito num único modal).
 
   const deleteSaleMut = useMutation({
     mutationFn: (id: string) => deleteSale(id),
@@ -573,55 +1064,160 @@ function SalesPage() {
       qc.invalidateQueries({ queryKey: ["payables", cid] });
       qc.invalidateQueries({ queryKey: ["movements", cid] });
       qc.invalidateQueries({ queryKey: ["cash-transactions", currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-session-open-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-session-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-session-cash-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-cash-register", cid] });
+      qc.invalidateQueries({ queryKey: ["all-open-registers", cid] });
+      qc.invalidateQueries({ queryKey: ["cash-registers", cid] });
     },
     onError: (e: any) => toast.error(e.message || "Erro ao excluir venda"),
   });
 
+  const paymentsHaveAutoNfce = (pmts: typeof payments) => {
+    const usedMethodIds = new Set(
+      pmts.map((p) => p.payment_method_id).filter(Boolean) as string[],
+    );
+    const usedMethods = paymentMethods.filter((m) => usedMethodIds.has(m.id));
+    const nonVoucherMethods = usedMethods.filter((m) => m.id !== voucherMethodId);
+    return (
+      nonVoucherMethods.length > 0 &&
+      nonVoucherMethods.some((m) => !!(m as any).auto_issue_nfce)
+    );
+  };
+
   const finalizeOpenMut = useMutation({
-    mutationFn: (saleId: string) => finalizeOpenSale(saleId, selectedPaymentMethod?.name, total),
-    onSuccess: () => {
+    mutationFn: async (saleId: string) => {
+      const showNfceStep = nfType === "nfce" && paymentsHaveAutoNfce(payments);
+      const initialSteps: ProgressStep[] = [
+        { id: "register", label: "Finalizando venda em aberto", status: "running" },
+        { id: "credit", label: "Aplicando crédito do cliente", status: "skipped" },
+        ...(showNfceStep
+          ? ([{ id: "nfce", label: "Emitindo NFC-e", status: "pending" }] as ProgressStep[])
+          : []),
+        { id: "print", label: "Imprimindo comprovante", status: "pending" },
+      ];
+      startProgress(initialSteps, saleId);
+
+      try {
+        await finalizeOpenSale(
+          saleId,
+          selectedPaymentMethod?.name ?? payments[0]?.method,
+          total,
+          payments.length > 0 ? (payments as SalePaymentInput[]) : undefined,
+        );
+        try {
+          await supabase.from("sales").update({ nf_type: nfType } as any).eq("id", saleId);
+        } catch (e) {
+          console.warn("Falha ao persistir nf_type na finalização", e);
+        }
+        updateProgressStep("register", { status: "done", detail: "Venda finalizada." });
+        return saleId;
+      } catch (e: any) {
+        updateProgressStep("register", { status: "error", detail: e?.message || "Falha ao finalizar." });
+        updateProgressStep("nfce", { status: "skipped" });
+        updateProgressStep("print", { status: "skipped" });
+        throw e;
+      }
+    },
+    onSuccess: async (saleId) => {
       const soldItems = items.map((i) => ({
         product_id: i.product_id,
         unit_price: i.unit_price,
         name: i.name,
       }));
       void syncMissingProductPrices(soldItems);
-      setFinalizeStep("Emitindo comprovante...");
-      setTimeout(() => {
-        toast.success("Venda finalizada com sucesso!");
+      const paymentsSnapshot = [...payments];
 
-        localStorage.removeItem(`${SAVED_SALE_KEY}_items`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_customerId`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_discountMode`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_discountValueRaw`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_discountPctRaw`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_paymentMethodId`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_dueDate`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_amountReceivedRaw`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_saleId`);
+      // Dispara a impressão do cupom EM PARALELO com a emissão da NFC-e,
+      // para não travar o operador enquanto a nota é gerada.
+      const persistedAutoPrint =
+        typeof window !== "undefined" &&
+        localStorage.getItem(`auto_print_coupon_${cid}`) === "true";
+      const shouldAutoPrint = persistedAutoPrint || autoPrintCoupon;
+      const printPromise: Promise<void> = shouldAutoPrint
+        ? (async () => {
+            updateProgressStep("print", { status: "running", detail: "Imprimindo cupom de vendas..." });
+            try {
+              await Promise.resolve(
+                handlePrintSale(
+                  {
+                    id: saleId,
+                    items,
+                    subtotal,
+                    discount: discountAmount,
+                    total,
+                    paymentMethod:
+                      paymentsSnapshot
+                        .map((p: any) => p?.method)
+                        .filter(Boolean)
+                        .join(" + ") ||
+                      selectedPaymentMethod?.name ||
+                      "Dinheiro",
+                    payments: paymentsSnapshot,
+                  },
+                  { auto: true },
+                ),
+              );
+              updateProgressStep("print", { status: "done", detail: "Impressão enviada." });
+            } catch (e: any) {
+              updateProgressStep("print", { status: "error", detail: e?.message || "Falha ao imprimir." });
+            }
+          })()
+        : (updateProgressStep("print", {
+            status: "skipped",
+            detail: "Impressão automática desativada nas configurações desta venda.",
+          }),
+          Promise.resolve());
 
-        setItems([]);
-        setCurrentSaleId(null);
-        setDiscountValueRaw("0,00");
-        setDiscountPctRaw("0");
-        setShowDiscountFields(false);
-        setAmountReceivedRaw("0,00");
-        setCustomerId("none");
-        setDueDate("");
-        setPaymentMethodId("");
-        setCurrentPage(1);
-        stockReservation.releaseAll();
+      // Roda emissão da NFC-e e impressão em paralelo
+      await Promise.allSettled([
+        triggerAutoOrAskNfce(saleId, paymentsSnapshot),
+        printPromise,
+      ]);
 
-        qc.invalidateQueries({ queryKey: ["sales", cid] });
-        qc.invalidateQueries({ queryKey: ["sales-paginated", cid] });
-        qc.invalidateQueries({ queryKey: ["products", cid] });
-        qc.invalidateQueries({ queryKey: ["payables", cid] });
-        qc.invalidateQueries({ queryKey: ["movements", cid] });
-        qc.invalidateQueries({ queryKey: ["current-session-sales", cid, currentRegister?.id] });
-        qc.invalidateQueries({ queryKey: ["cash-transactions", currentRegister?.id] });
-        setFinalizeStep(null);
-      }, 500);
+
+
+
+
+      localStorage.removeItem(`${SAVED_SALE_KEY}_items`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_customerId`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_discountMode`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_discountValueRaw`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_discountPctRaw`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_paymentMethodId`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_dueDate`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_amountReceivedRaw`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_saleId`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_payments`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_reopenedNumber`);
+
+      setItems([]);
+      setCurrentSaleId(null);
+      setReopenedFromNumber(null);
+      setDiscountValueRaw("0,00");
+      setDiscountPctRaw("0");
+      setShowDiscountFields(false);
+      setAmountReceivedRaw("0,00");
+      setCustomerId("none"); setNfType("nfce"); localStorage.removeItem(`${SAVED_SALE_KEY}_nfType`);
+      setDueDate("");
+      setPaymentMethodId("");
+      setPayments([]);
+      setCurrentPage(1);
+      stockReservation.releaseAll();
+
+      qc.invalidateQueries({ queryKey: ["sales", cid] });
+      qc.invalidateQueries({ queryKey: ["sales-paginated", cid] });
+      qc.invalidateQueries({ queryKey: ["products", cid] });
+      qc.invalidateQueries({ queryKey: ["payables", cid] });
+      qc.invalidateQueries({ queryKey: ["movements", cid] });
+      qc.invalidateQueries({ queryKey: ["current-session-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-session-cash-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-session-open-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["cash-transactions", currentRegister?.id] });
+      setFinalizeStep(null);
     },
+
     onError: (e: any) => {
       setFinalizeStep(null);
       toast.error(e.message);
@@ -641,7 +1237,55 @@ function SalesPage() {
     onError: (e: any) => toast.error(e.message),
   });
 
-  const [cancelSaleId, setCancelSaleId] = useState<string | null>(null);
+  const editSaleFullMut = useMutation({
+    mutationFn: ({ saleId, payload }: { saleId: string; payload: any }) =>
+      editSaleFull(saleId, payload),
+    onSuccess: () => {
+      toast.success("Venda atualizada com sucesso!");
+      qc.invalidateQueries({ queryKey: ["sales", cid] });
+      qc.invalidateQueries({ queryKey: ["sales-paginated", cid] });
+      qc.invalidateQueries({ queryKey: ["cash-transactions", currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["sale-edit-logs"] });
+      qc.invalidateQueries({ queryKey: ["sale-detail"] });
+      setEditingSale(null);
+    },
+    onError: (e: any) => toast.error(e.message || "Erro ao editar venda"),
+  });
+
+  // Reabre uma venda concluída para o carrinho (modo edição)
+  const reopenToCartMut = useMutation({
+    mutationFn: async (sale: any) => {
+      await reopenSaleToCart(sale.id, currentRegister?.user_id_open || activeRegisterUserId);
+      // Sempre buscar itens do banco — o objeto da lista não traz sale_items
+      const { data: itemsData, error: itemsErr } = await supabase
+        .from("sale_items")
+        .select("product_id, quantity, unit_price, products(name, sku)")
+        .eq("sale_id", sale.id);
+      if (itemsErr) throw itemsErr;
+      return { ...sale, sale_items: itemsData ?? [] };
+    },
+    onSuccess: (sale: any) => {
+      void restoreOpenSaleToCart(sale, { highlight: true, switchTab: true, notify: true });
+
+      qc.invalidateQueries({ queryKey: ["sales", cid] });
+      qc.invalidateQueries({ queryKey: ["sales-paginated", cid] });
+      qc.invalidateQueries({ queryKey: ["payables", cid] });
+      qc.invalidateQueries({ queryKey: ["current-session-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-session-cash-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-session-open-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["cash-transactions", currentRegister?.id] });
+
+      // Rola para o topo / abre o carrinho
+      try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch {}
+    },
+    onError: (e: any) => toast.error(e.message || "Erro ao reabrir venda"),
+  });
+
+
+
+  
+  const [cancelDialogSale, setCancelDialogSale] = useState<any | null>(null);
+  const [creditApplied, setCreditApplied] = useState<number>(0);
   const [editingSale, setEditingSale] = useState<any | null>(null);
   const [authDialog, setAuthDialog] = useState<{
     isOpen: boolean;
@@ -681,14 +1325,30 @@ function SalesPage() {
   const handleCancelRegister = async () => {
     if (!validateSessionAction()) return;
 
+    const fiscalNotesResult = await currentSessionFiscalNotesQ.refetch();
+    const hasFiscalNote =
+      sessionHasFiscalNote ||
+      ((fiscalNotesResult.data as any[]) || []).some((n) =>
+        ["autorizada", "processando", "cancelada", "rejeitada"].includes(
+          String(n.status || "").toLowerCase(),
+        ),
+      );
+    if (hasFiscalNote) {
+      toast.error(
+        "Não é possível cancelar a abertura porque já existe venda com nota fiscal emitida nesta sessão.",
+      );
+      return;
+    }
+
     const concludedSales =
       currentSessionSalesQ.data?.filter((s) => s.status === "concluida").length || 0;
-    if (concludedSales > 0) {
+    if (concludedSales > 0 && !isSAdmin) {
       toast.error(
         "Não é possível cancelar a abertura pois já existem vendas concluídas neste caixa.",
       );
       return;
     }
+
 
     if (
       await confirm({
@@ -729,11 +1389,104 @@ function SalesPage() {
     });
   };
   const brands = brandsQ.data ?? [];
+  const brandsById = useMemo(() => new Map(brands.map((b) => [b.id, b.name])), [brands]);
 
   const products = productsQ.data ?? [];
+  const restoreOpenSaleToCart = useMemo(
+    () => async (
+      sale: OpenCartSale,
+      opts?: { highlight?: boolean; switchTab?: boolean; notify?: boolean },
+    ) => {
+      const rawItems = Array.isArray(sale.sale_items) ? sale.sale_items : [];
+      const cartItems: CartItem[] = rawItems.map((si) => {
+        const prod = products.find((p) => p.id === si.product_id);
+        return {
+          product_id: si.product_id,
+          name: prod?.name ?? si.products?.name ?? "Produto",
+          sku: prod?.sku ?? si.products?.sku ?? "",
+          quantity: Number(si.quantity),
+          unit_price: Number(si.unit_price),
+          stock: Number(prod?.stock ?? 0) + Number(si.quantity),
+          description: prod?.description ?? null,
+        };
+      });
+
+      setItems(cartItems);
+      setCurrentSaleId(sale.id);
+      setCustomerId(sale.customer_id || "none");
+
+      const disc = Number(sale.discount ?? 0);
+      if (disc > 0) {
+        setDiscountMode("valor");
+        setDiscountValueRaw(disc.toFixed(2).replace(".", ","));
+        setShowDiscountFields(true);
+      } else {
+        setDiscountValueRaw("0,00");
+        setDiscountPctRaw("0");
+        setShowDiscountFields(false);
+      }
+
+      setPayments([]);
+      setPaymentMethodId("");
+      setAmountReceivedRaw("0,00");
+      setDueDate("");
+
+      const num = sale.number ? String(sale.number) : (sale.id?.slice(0, 6) ?? "");
+      if (opts?.highlight !== false) setReopenedFromNumber(num);
+      try {
+        if (opts?.highlight !== false) localStorage.setItem(`${SAVED_SALE_KEY}_reopenedNumber`, num);
+        localStorage.setItem(`${SAVED_SALE_KEY}_items`, JSON.stringify(cartItems));
+        localStorage.setItem(`${SAVED_SALE_KEY}_saleId`, sale.id);
+        localStorage.setItem(`${SAVED_SALE_KEY}_customerId`, sale.customer_id || "none");
+        localStorage.setItem(`${SAVED_SALE_KEY}_discountMode`, "valor");
+        localStorage.setItem(
+          `${SAVED_SALE_KEY}_discountValueRaw`,
+          disc > 0 ? disc.toFixed(2).replace(".", ",") : "0,00",
+        );
+        localStorage.setItem(`${SAVED_SALE_KEY}_discountPctRaw`, "0");
+        localStorage.setItem(`${SAVED_SALE_KEY}_paymentMethodId`, "");
+        localStorage.setItem(`${SAVED_SALE_KEY}_dueDate`, "");
+        localStorage.setItem(`${SAVED_SALE_KEY}_amountReceivedRaw`, "0,00");
+        localStorage.setItem(`${SAVED_SALE_KEY}_payments`, JSON.stringify([]));
+      } catch {}
+
+      if (opts?.switchTab !== false) setActiveTab("venda");
+      if (opts?.notify) {
+        toast.success(
+          `Venda #${num} reaberta no carrinho. Finalize novamente quando concluir as alterações.`,
+        );
+      }
+      return cartItems;
+    },
+    [SAVED_SALE_KEY, products],
+  );
+  useEffect(() => {
+    if (!currentSaleId || !isCashOpen || items.length > 0 || productsQ.isLoading) return;
+    let cancelled = false;
+    void (async () => {
+      const { data, error } = await supabase
+        .from("sales")
+        .select(
+          "id, number, status, customer_id, discount, sale_items(product_id, quantity, unit_price, products(name, sku))",
+        )
+        .eq("id", currentSaleId)
+        .eq("status", "aberta")
+        .maybeSingle();
+      if (cancelled || error || !data) return;
+      void restoreOpenSaleToCart(data as unknown as OpenCartSale, {
+        highlight: true,
+        switchTab: true,
+        notify: false,
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentSaleId, isCashOpen, items.length, productsQ.isLoading, restoreOpenSaleToCart]);
+
   const productRefsMap = useMemo(
-    () => buildRefsSearchMap(productRefsQ.data ?? [], new Map(brands.map((b) => [b.id, b.name]))),
-    [productRefsQ.data, brands],
+    () => buildRefsSearchMap(productRefsQ.data ?? [], brandsById),
+    [productRefsQ.data, brandsById],
   );
   const productRefsBrandMap = useMemo(
     () => buildRefsBrandMap(productRefsQ.data ?? []),
@@ -748,52 +1501,126 @@ function SalesPage() {
   const paymentMethods = paymentMethodsQ.data ?? [];
   const [methodCounts, setMethodCounts] = useState<Record<string, string>>({});
 
+  const sessionHasFiscalNote = useMemo(() => {
+    const validStatuses = ["autorizada", "processando", "cancelada", "rejeitada"];
+    const notes = (currentSessionFiscalNotesQ.data as any[]) || [];
+    if (notes.some((n) => validStatuses.includes(String(n.status || "").toLowerCase()))) {
+      return true;
+    }
+    const list = (currentSessionSalesQ.data as any[]) || [];
+    return list.some((s) =>
+      Array.isArray(s.fiscal_notes) &&
+      s.fiscal_notes.some((n: any) => validStatuses.includes(String(n.status || "").toLowerCase())),
+    );
+  }, [currentSessionFiscalNotesQ.data, currentSessionSalesQ.data]);
+
   const methodCalculatedBalances = useMemo(() => {
-    if (!currentRegister || !currentTransactionsQ.data) return {};
+    if (!currentRegister) return {};
     const balances: Record<string, number> = {};
+    const norm = (s: string) =>
+      (s || "")
+        .toString()
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim();
+
+    const paymentMethodMatches = (pm: any, value: unknown) => {
+      const target = norm(String(value || ""));
+      if (!target) return false;
+      const name = norm(pm.name);
+      if (name === target || name.includes(target) || target.includes(name)) return true;
+      if (target === "cash" && (name.includes("dinheiro") || name.includes("cash"))) return true;
+      if (target === "pix" && name.includes("pix")) return true;
+      if (
+        target === "credit_card" &&
+        (name.includes("credito") || (name.includes("cartao") && !name.includes("debito")))
+      ) {
+        return true;
+      }
+      if (
+        target === "debit_card" &&
+        (name.includes("debito") || (name.includes("cartao") && !name.includes("credito")))
+      ) {
+        return true;
+      }
+      if (target === "boleto" && name.includes("boleto")) return true;
+      return false;
+    };
 
     paymentMethods.forEach((pm) => {
       balances[pm.id] = 0;
-      const name = pm.name.toLowerCase();
-      // Somente o saldo inicial entra no dinheiro
-      if (name.includes("dinheiro")) {
-        balances[pm.id] = Number(currentRegister.initial_balance || 0);
-      }
     });
 
+    // O saldo inicial entra UMA única vez, no método "Dinheiro" principal
+    // (evita duplicar quando existem variações como "Dinheiro - Sem Nota").
+    const cashMethods = paymentMethods.filter((pm) => norm(pm.name).includes("dinheiro"));
+    const primaryCash =
+      cashMethods.find((pm) => norm(pm.name) === "dinheiro") || cashMethods[0];
+    if (primaryCash) {
+      balances[primaryCash.id] = Number(currentRegister.initial_balance || 0);
+    }
+
+
+    const cashSales = (currentSessionCashSalesQ.isSuccess
+      ? (currentSessionCashSalesQ.data as any[])
+      : (currentSessionSalesQ.data as any[])) || [];
+    const cashSaleById = new Map(cashSales.map((s) => [String(s.id), s]));
+    const hasCashSalesSnapshot = currentSessionCashSalesQ.isSuccess || currentSessionSalesQ.isSuccess;
+
+    // Soma movimentações reais do caixa por método; SALE usa o enum salvo na transação.
     (currentTransactionsQ.data as any[])?.forEach((t) => {
-      const pm = paymentMethods.find((p) => {
-        const name = p.name.toLowerCase();
-        const m = t.payment_method;
-        if (m === "CASH" && (name.includes("dinheiro") || name.includes("cash"))) return true;
-        if (m === "PIX" && name.includes("pix")) return true;
-        if (
-          m === "CREDIT_CARD" &&
-          (name.includes("crédito") ||
-            name.includes("credito") ||
-            ((name.includes("cartão") || name.includes("catão")) &&
-              !name.includes("débito") &&
-              !name.includes("debito")))
-        )
-          return true;
-        if (
-          m === "DEBIT_CARD" &&
-          (name.includes("débito") ||
-            name.includes("debito") ||
-            ((name.includes("cartão") || name.includes("catão")) &&
-              !name.includes("crédito") &&
-              !name.includes("credito")))
-        )
-          return true;
-        if (m === "BOLETO" && name.includes("boleto")) return true;
-        return false;
-      });
-      if (pm) {
-        balances[pm.id] += t.type === "IN" ? Number(t.amount) : -Number(t.amount);
+      if (t.category === "SALE" && t.reference_id) {
+        const sale = cashSaleById.get(String(t.reference_id));
+        if (hasCashSalesSnapshot && (!sale || sale.status !== "concluida" || sale.type === "devolucao")) {
+          return;
+        }
       }
+      const pm = paymentMethods.find((p) => paymentMethodMatches(p, t.payment_method));
+      if (pm) balances[pm.id] += t.type === "IN" ? Number(t.amount) : -Number(t.amount);
+    });
+
+    // Fallback para vendas sem cash_transaction vinculada.
+    const seenSaleTx = new Set(
+      ((currentTransactionsQ.data as any[]) || [])
+        .filter((t) => t.category === "SALE" && t.reference_id)
+        .map((t) => String(t.reference_id)),
+    );
+    cashSales.forEach((s) => {
+      if (s.status !== "concluida") return;
+      if (s.type === "devolucao") return;
+      if (seenSaleTx.has(String(s.id))) return;
+      const pm = paymentMethods.find((p) => paymentMethodMatches(p, s.payment_method));
+      if (pm) balances[pm.id] = (balances[pm.id] || 0) + Number(s.total || 0);
+    });
+    cashSales.forEach((s) => {
+      if (s.status !== "concluida" || s.type !== "devolucao") return;
+      const pm = paymentMethods.find((p) => paymentMethodMatches(p, s.payment_method));
+      if (pm) balances[pm.id] = (balances[pm.id] || 0) - Number(s.total || 0);
     });
     return balances;
-  }, [currentRegister, currentTransactionsQ.data, paymentMethods]);
+  }, [
+    currentRegister,
+    currentTransactionsQ.data,
+    currentSessionCashSalesQ.data,
+    currentSessionCashSalesQ.isSuccess,
+    currentSessionSalesQ.data,
+    currentSessionSalesQ.isSuccess,
+    paymentMethods,
+  ]);
+
+  useEffect(() => {
+    if (!showCloseModal) return;
+    const counts: Record<string, string> = {};
+    paymentMethods
+      .filter((pm) => pm.active)
+      .forEach((pm) => {
+        counts[pm.id] = formatCurrencyInput(
+          String((methodCalculatedBalances[pm.id] || 0).toFixed(2)),
+        );
+      });
+    setMethodCounts(counts);
+  }, [showCloseModal, methodCalculatedBalances, paymentMethods]);
 
   const [currentPage, setCurrentPage] = useState(1);
   // pageSize state is used directly
@@ -801,13 +1628,27 @@ function SalesPage() {
     key: "created_at",
     direction: "desc",
   });
-  const [statusFilter, setStatusFilter] = useState<string>("concluida");
+  const [statusFilter, setStatusFilter] = useState<string>("todas");
+  const routeSearch = Route.useSearch();
+  const viewingClosedRegister = Boolean(routeSearch.rid);
   const [dateFromFilter, setDateFromFilter] = useState<string>(
-    () => new Date().toISOString().split("T")[0],
+    () => routeSearch.from ?? new Date().toISOString().split("T")[0],
   );
   const [dateToFilter, setDateToFilter] = useState<string>(
-    () => new Date().toISOString().split("T")[0],
+    () => routeSearch.to ?? new Date().toISOString().split("T")[0],
   );
+  // Sincroniza quando navegação altera o range (ex.: vindo do fechamento de caixa)
+  useEffect(() => {
+    if (routeSearch.from) setDateFromFilter(routeSearch.from);
+    if (routeSearch.to) setDateToFilter(routeSearch.to);
+    if (routeSearch.from || routeSearch.to || routeSearch.rid) {
+      setStatusFilter("todas");
+      setCurrentPage(1);
+    }
+    if (routeSearch.rid) {
+      setTimeout(() => document.getElementById("historico")?.scrollIntoView({ behavior: "smooth" }), 0);
+    }
+  }, [routeSearch.from, routeSearch.to, routeSearch.rid]);
 
   const salesQ = useQuery({
     queryKey: [
@@ -818,6 +1659,7 @@ function SalesPage() {
       dateFromFilter,
       dateToFilter,
       activeRegisterUserId,
+      routeSearch.rid,
       currentPage,
       pageSize,
     ],
@@ -830,9 +1672,10 @@ function SalesPage() {
         status: statusFilter,
         dateFrom: dateFromFilter,
         dateTo: dateToFilter,
-        userId: activeRegisterUserId && !hasSpecialAccess ? activeRegisterUserId : undefined,
+        userId: viewingClosedRegister ? undefined : (activeRegisterUserId && !hasSpecialAccess ? activeRegisterUserId : undefined),
+        cashRegisterId: routeSearch.rid,
       }),
-    enabled: !!cid && activeTab === "historico",
+    enabled: !!cid,
   });
 
   const sales = useMemo(() => {
@@ -841,18 +1684,164 @@ function SalesPage() {
 
   const totalSalesCount = salesQ.data?.count ?? 0;
 
+  // Map de NFC-e ativas (autorizada/processando) por venda → bloqueia
+  // edição/cancelamento até que a nota seja cancelada na SEFAZ.
+  const saleIds = useMemo(() => sales.map((s: any) => s.id), [sales]);
+  const activeFiscalNotesQ = useQuery({
+    queryKey: ["sales-active-fiscal-notes", cid, saleIds],
+    queryFn: async () => {
+      if (!cid || saleIds.length === 0) return {} as Record<string, string>;
+      const { data } = await supabase
+        .from("fiscal_notes")
+        .select("sale_id, status")
+        .eq("company_id", cid)
+        .in("sale_id", saleIds)
+        .in("status", ["autorizada", "processando", "cancelada"]);
+      const map: Record<string, string> = {};
+      for (const r of (data as any[]) ?? []) {
+        if (r.sale_id) map[r.sale_id] = r.status;
+      }
+      return map;
+    },
+    enabled: !!cid && saleIds.length > 0,
+  });
+  const activeNoteMap = activeFiscalNotesQ.data ?? {};
+
+  // Map: venda → ref da NFC-e, para verificar se o e-mail (XML+PDF) foi enviado
+  const fiscalNoteRefsQ = useQuery({
+    queryKey: ["sales-fiscal-note-refs", cid, saleIds],
+    queryFn: async () => {
+      if (!cid || saleIds.length === 0) return {} as Record<string, string>;
+      const { data } = await supabase
+        .from("fiscal_notes")
+        .select("sale_id, ref")
+        .eq("company_id", cid)
+        .in("sale_id", saleIds);
+      const map: Record<string, string> = {};
+      for (const r of (data as any[]) ?? []) {
+        if (r.sale_id && r.ref) map[r.sale_id] = r.ref;
+      }
+      return map;
+    },
+    enabled: !!cid && saleIds.length > 0,
+  });
+  const noteRefBySale = useMemo(() => fiscalNoteRefsQ.data ?? {}, [fiscalNoteRefsQ.data]);
+
+  const sentNoteEmailsQ = useQuery({
+    queryKey: ["sales-nfce-email-sent", cid, noteRefBySale],
+    queryFn: async () => {
+      const refs = Object.values(noteRefBySale);
+      if (!cid || refs.length === 0) return { sent: {} as Record<string, true>, failed: {} as Record<string, true> };
+      const { data } = await supabase
+        .from("email_logs")
+        .select("context, status")
+        .eq("company_id", cid)
+        .in("context", refs.map((r) => `nfce:${r}`));
+      const sentRefs = new Set<string>();
+      const failedRefs = new Set<string>();
+      for (const r of (data as any[]) ?? []) {
+        const ref = String(r.context ?? "").replace(/^nfce:/, "");
+        if (!ref) continue;
+        if (r.status === "sent") sentRefs.add(ref);
+        else if (r.status === "error" || r.status === "failed") failedRefs.add(ref);
+      }
+      const sent: Record<string, true> = {};
+      const failed: Record<string, true> = {};
+      for (const [saleId, ref] of Object.entries(noteRefBySale)) {
+        if (sentRefs.has(ref)) sent[saleId] = true;
+        else if (failedRefs.has(ref)) failed[saleId] = true;
+      }
+      return { sent, failed };
+    },
+    enabled: !!cid && Object.keys(noteRefBySale).length > 0,
+  });
+  const emailSentMap = (sentNoteEmailsQ.data?.sent) ?? {};
+  const emailFailedMap = (sentNoteEmailsQ.data?.failed) ?? {};
+
+  // Map: id da venda original → devolução (id, number) que já foi criada
+  const returnsMapQ = useQuery({
+    queryKey: ["sales-returns-map", cid, saleIds],
+    queryFn: async () => {
+      if (!cid || saleIds.length === 0) return {} as Record<string, { id: string; number: number }>;
+      const { data } = await supabase
+        .from("sales")
+        .select("id, number, origin_sale_id")
+        .eq("company_id", cid)
+        .eq("type", "devolucao")
+        .eq("status", "concluida")
+        .in("origin_sale_id", saleIds);
+      const map: Record<string, { id: string; number: number }> = {};
+      for (const r of (data as any[]) ?? []) {
+        if (r.origin_sale_id) map[r.origin_sale_id] = { id: r.id, number: r.number };
+      }
+      return map;
+    },
+    enabled: !!cid && saleIds.length > 0,
+  });
+  const returnsMap = returnsMapQ.data ?? {};
+
+  // Para linhas de devolução, mapa: id da venda original → número
+  const originIds = useMemo(
+    () => sales.filter((s: any) => s.type === "devolucao" && s.origin_sale_id).map((s: any) => s.origin_sale_id),
+    [sales],
+  );
+  const originsMapQ = useQuery({
+    queryKey: ["sales-origins-map", cid, originIds],
+    queryFn: async () => {
+      if (!cid || originIds.length === 0) return {} as Record<string, number>;
+      const { data } = await supabase.from("sales").select("id, number").in("id", originIds as string[]);
+      const map: Record<string, number> = {};
+      for (const r of (data as any[]) ?? []) map[r.id] = r.number;
+      return map;
+    },
+    enabled: !!cid && originIds.length > 0,
+  });
+  const originsMap = originsMapQ.data ?? {};
+
+
+
   const handleSort = (key: string) => {
     let direction: "asc" | "desc" = "asc";
     if (sortConfig && sortConfig.key === key && sortConfig.direction === "asc") direction = "desc";
     setSortConfig({ key, direction });
   };
 
-  const filteredSales = sales; // Agora o filtro é feito no servidor
-  const paginatedSales = sales;
+  const sortedSales = useMemo(() => {
+    if (!sortConfig) return sales;
+    const { key, direction } = sortConfig;
+    const dir = direction === "asc" ? 1 : -1;
+    const getVal = (s: any) => {
+      if (key === "customer_name") return (s.customer?.name ?? "").toString().toLowerCase();
+      if (key === "created_at") return new Date(s.created_at).getTime();
+      if (key === "total") return Number(s.total ?? 0);
+      if (key === "number") return Number(s.number ?? 0);
+      const v = s[key];
+      return typeof v === "string" ? v.toLowerCase() : v ?? "";
+    };
+    return [...sales].sort((a, b) => {
+      const va = getVal(a);
+      const vb = getVal(b);
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    });
+  }, [sales, sortConfig]);
+  const filteredSales = sortedSales;
+  const paginatedSales = sortedSales;
   const totalPages = Math.ceil(totalSalesCount / pageSize);
 
   const [customerId, setCustomerId] = useState<string>(
     () => localStorage.getItem(`${SAVED_SALE_KEY}_customerId`) || "none",
+  );
+  const [nfType, setNfType] = useState<"nfce" | "nfe">(
+    () => (localStorage.getItem(`${SAVED_SALE_KEY}_nfType`) as any) || "nfce",
+  );
+  useEffect(() => {
+    localStorage.setItem(`${SAVED_SALE_KEY}_nfType`, nfType);
+  }, [nfType]);
+  const selectedCustomer = useMemo(
+    () => customers.find((c) => c.id === customerId) ?? null,
+    [customers, customerId],
   );
   const handlePrint = () => {
     printList({
@@ -874,16 +1863,214 @@ function SalesPage() {
       rows: filteredSales,
     });
   };
+  // Vendas "aberta" órfãs (sem carrinho) são descartadas apenas se antigas,
+  // evitando cancelar vendas recém-criadas que ainda estão sendo processadas.
+  const ORPHAN_MIN_AGE_MS = 60 * 60 * 1000;
+  useEffect(() => {
+    const now = Date.now();
+    const candidates = ((currentSessionOpenSalesQ.data as any[]) || []).filter(
+      (s) =>
+        s.id !== currentSaleId &&
+        s.status === "aberta" &&
+        s.created_at &&
+        now - new Date(s.created_at).getTime() > ORPHAN_MIN_AGE_MS,
+    );
+    if (candidates.length === 0) return;
+    (async () => {
+      try {
+        const sb = supabase as any;
+        for (const s of candidates) {
+          // Revalida o status no banco antes de cancelar: a lista pode estar
+          // desatualizada e a venda já ter sido concluída nesse meio-tempo.
+          const { data: fresh } = await sb
+            .from("sales")
+            .select("id, status")
+            .eq("id", s.id)
+            .maybeSingle();
+          if (!fresh || fresh.status !== "aberta") continue;
+          await cancelSale(s.id, "Venda em aberto descartada automaticamente (sem carrinho)", { onlyIfStatus: "aberta" });
+        }
+        await currentSessionOpenSalesQ.refetch();
+        await currentSessionSalesQ.refetch();
+      } catch {
+        /* ignore */
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSessionOpenSalesQ.data, currentSaleId]);
+
+
   const hasOpenSales = useMemo(() => {
-    return currentSessionSalesQ.data?.some((s) => s.status === "aberta") || items.length > 0;
-  }, [currentSessionSalesQ.data, items]);
+    return items.length > 0;
+  }, [items]);
+
 
   const hasAnySalesInSession = useMemo(() => {
-    return (currentSessionSalesQ.data?.length || 0) > 0 || items.length > 0;
-  }, [currentSessionSalesQ.data, items]);
+    return (currentSessionSalesQ.data?.length || 0) > 0 || hasOpenSales;
+  }, [currentSessionSalesQ.data, hasOpenSales]);
+
+  // Fechar caixa mesmo com pendências: cancela vendas em aberto e limpa o carrinho
+  const proceedCloseCash = async () => {
+    if (!hasOpenSales) {
+      setShowCloseModal(true);
+      return;
+    }
+
+    const pendentes = (currentSessionOpenSalesQ.data as any[]) || [];
+    const ok = await confirm({
+      title: "Existem pendências nesta sessão",
+      description: `${pendentes.length > 0 ? `${pendentes.length} venda(s) em aberto serão canceladas. ` : ""}${items.length > 0 ? "A venda em andamento (carrinho) será descartada. " : ""}Deseja continuar e fechar o caixa?`,
+      confirmLabel: "Cancelar pendências e fechar",
+      variant: "destructive",
+    });
+    if (!ok) return;
+    try {
+      for (const s of pendentes) {
+        await cancelSale(s.id, "Cancelada automaticamente no fechamento do caixa");
+      }
+      if (items.length > 0) {
+        setItems([]);
+        setCurrentSaleId(null);
+        try {
+          localStorage.removeItem(`${SAVED_SALE_KEY}_items`);
+          localStorage.removeItem(`${SAVED_SALE_KEY}_saleId`);
+          localStorage.removeItem(`${SAVED_SALE_KEY}_payments`);
+        } catch {
+          /* ignore */
+        }
+      }
+      await currentSessionOpenSalesQ.refetch();
+      await currentSessionSalesQ.refetch();
+      setShowCloseModal(true);
+    } catch (e: any) {
+      toast.error(e?.message || "Não foi possível cancelar as vendas em aberto.");
+    }
+  };
+
+  const [overdueCloseOpen, setOverdueCloseOpen] = useState(false);
+  const overdueForCloseQ = useOverdueTasks(cid, user?.id);
+
+  const handleCloseCashClick = async () => {
+    if ((overdueForCloseQ.data?.length || 0) > 0) {
+      setOverdueCloseOpen(true);
+      return;
+    }
+    await proceedCloseCash();
+  };
+
+
+
+
+  // Caixa em aberto pertencente ao usuário logado (mesmo que não seja o caixa selecionado)
+  const myOpenRegister = useMemo(
+    () => (allOpenRegisters || []).find((r: any) => r.user_id_open === user?.id) || null,
+    [allOpenRegisters, user?.id],
+  );
+
+  // Caixa aberto do operador selecionado na abertura (bloqueia nova abertura)
+  const selectedOperatorOpenRegister = useMemo(
+    () =>
+      (allOpenRegisters || []).find((r: any) => r.user_id_open === selectedOpeningUserId) || null,
+    [allOpenRegisters, selectedOpeningUserId],
+  );
+
+  // Abre direto o modal de fechamento quando vem de "Fechar caixa" na Gestão de Caixa
+  const handledCloseParam = useRef(false);
+  useEffect(() => {
+    if (handledCloseParam.current) return;
+    const target = routeSearch.close;
+    if (!target) return;
+    handledCloseParam.current = true;
+    const uid = target === "1" ? user?.id : target;
+    if (uid) {
+      setActiveRegisterUserId(uid);
+      try {
+        localStorage.setItem(SELECTED_CAIXA_USER_KEY, uid);
+      } catch {
+        /* ignore */
+      }
+    }
+    setShowCloseModal(true);
+    navigate({ to: "/app/vendas", search: {}, replace: true });
+  }, [routeSearch.close, user?.id, SELECTED_CAIXA_USER_KEY, navigate]);
+
+
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [productSearch, setProductSearch] = useState("");
+  const productSearchDeferred = useDeferredValue(productSearch);
+  // Normalização agressiva: lowercase, sem acento, sem pontuação, sem espaços,
+  // e com dígitos/letras intercambiáveis (0↔o, 1↔i) para encontrar "0W-20",
+  // "0 W 20", "ow20" todos como equivalentes.
+  const fuzzify = (s: string) => {
+    const base = normalize(s).replace(/\s+/g, "");
+    return base.replace(/0/g, "o").replace(/1/g, "i");
+  };
+  // Para cada palavra digitada, geramos variantes (normalizada e fuzzificada).
+  // Um produto casa quando, para CADA palavra, AO MENOS UMA variante aparece
+  // no texto indexado. Isso garante encontrar "0534" mesmo em SKUs como
+  // "EK.0534", "EK-0534" ou "EK 0534".
+  const productSearchTerms = useMemo<string[][]>(() => {
+    const n = normalize(productSearchDeferred);
+    if (!n) return [];
+    const words = n.split(" ").filter(Boolean);
+    const variantSets: string[][] = words.map((w) =>
+      Array.from(new Set([w, fuzzify(w)].filter(Boolean))),
+    );
+    const compactRaw = n.replace(/\s+/g, "");
+    const compactFz = fuzzify(n);
+    const compactVariants = Array.from(
+      new Set([compactRaw, compactFz].filter(Boolean)),
+    );
+    if (compactVariants.length > 0) variantSets.push(compactVariants);
+    return variantSets;
+  }, [productSearchDeferred]);
+  const productSearchIndex = useMemo(() => {
+    return (products as any[])
+      .map((p: any) => {
+        const refs = productRefsMap.get(p.id) || "";
+        const brandName = p.brand_id ? brandsById.get(p.brand_id) || "" : "";
+        const joined = [
+          p.name,
+          p.sku,
+          p.alternative_code,
+          p.gtin,
+          p.gtin_tributavel,
+          p.description,
+          p.unit,
+          brandName,
+          refs,
+        ]
+          .filter(Boolean)
+          .join(" ");
+        const norm = normalize(joined);
+        const normCompact = norm.replace(/\s+/g, "");
+        const fz = fuzzify(joined);
+        return {
+          product: p,
+          // Indexa em 3 variantes: normalizada, normalizada sem espaços e fuzzificada
+          searchText: `${norm} ${normCompact} ${fz}`,
+        };
+      })
+      .sort((a: any, b: any) => compareProductNames(a.product.name, b.product.name));
+  }, [products, productRefsMap, brandsById]);
+  const productPickerResults = useMemo(() => {
+    const filtered: any[] = [];
+    for (const entry of productSearchIndex) {
+      const p = entry.product;
+      if (!productMatchesBrand(p.id, p.brand_id, productBrandFilter, productRefsBrandMap)) continue;
+      if (
+        productSearchTerms.length > 0 &&
+        !productSearchTerms.every((variants) =>
+          variants.some((v) => entry.searchText.includes(v)),
+        )
+      )
+        continue;
+      filtered.push(p);
+      if (filtered.length >= 120) break;
+    }
+    return filtered;
+  }, [productSearchIndex, productBrandFilter, productRefsBrandMap, productSearchTerms]);
   const [barcodeInput, setBarcodeInput] = useState("");
   const [detailSaleId, setDetailSaleId] = useState<string | null>(null);
   const [discountMode, setDiscountMode] = useState<DiscountMode>(
@@ -894,8 +2081,28 @@ function SalesPage() {
   );
   const [showSalePreview, setShowSalePreview] = useState(false);
   const [showClosingPreview, setShowClosingPreview] = useState(false);
+  const [pendingClosingHtml, setPendingClosingHtml] = useState<string | null>(null);
+  const [pendingClosingCtx, setPendingClosingCtx] = useState<{ reg: any; sales: any[]; operatorEmail?: string | null } | null>(null);
+  const [includeSalesClosing, setIncludeSalesClosing] = useState(true);
   const [previewContent, setPreviewContent] = useState("");
   const [previewTitle, setPreviewTitle] = useState("");
+
+  // Regenera preview de fechamento quando o usuário alterna a inclusão da lista detalhada
+  useEffect(() => {
+    if (!showClosingPreview || !pendingClosingCtx) return;
+    const html = buildClosingHtmlFromRegister(
+      pendingClosingCtx.reg,
+      pendingClosingCtx.sales,
+      pendingClosingCtx.operatorEmail,
+      { includeSales: includeSalesClosing },
+    );
+    setPreviewContent(html);
+    setPendingClosingHtml(html);
+    setLastClosingHtml(html);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [includeSalesClosing]);
+
+
   const [discountPctRaw, setDiscountPctRaw] = useState(
     () => localStorage.getItem(`${SAVED_SALE_KEY}_discountPctRaw`) || "0",
   );
@@ -909,9 +2116,82 @@ function SalesPage() {
   const [amountReceivedRaw, setAmountReceivedRaw] = useState(
     () => localStorage.getItem(`${SAVED_SALE_KEY}_amountReceivedRaw`) || "0,00",
   );
+  const [payments, setPayments] = useState<PaymentRow[]>(() => {
+    try {
+      const raw = localStorage.getItem(`${SAVED_SALE_KEY}_payments`);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  });
+
+  useEffect(() => {
+    if (!currentSaleId) return;
+    let cancelled = false;
+    void (async () => {
+      const { data, error } = await supabase
+        .from("sales")
+        .select("id,status")
+        .eq("id", currentSaleId)
+        .maybeSingle();
+      if (cancelled || error || data?.status === "aberta") return;
+
+      setItems([]);
+      setCurrentSaleId(null);
+      setReopenedFromNumber(null);
+      setCustomerId("none");
+      setDiscountValueRaw("0,00");
+      setDiscountPctRaw("0");
+      setPaymentMethodId("");
+      setDueDate("");
+      setAmountReceivedRaw("0,00");
+      setPayments([]);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_items`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_customerId`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_discountMode`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_discountValueRaw`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_discountPctRaw`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_paymentMethodId`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_dueDate`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_amountReceivedRaw`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_payments`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_saleId`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_reopenedNumber`);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentSaleId, SAVED_SALE_KEY]);
+
   const [autoPrintCoupon, setAutoPrintCoupon] = useState(
     () => localStorage.getItem(`auto_print_coupon_${cid}`) === "true",
   );
+  // Resincroniza quando a empresa ativa muda (cid pode chegar vazio no 1º render)
+  useEffect(() => {
+    setAutoPrintCoupon(localStorage.getItem(`auto_print_coupon_${cid}`) === "true");
+  }, [cid]);
+
+  const [testingPrinter, setTestingPrinter] = useState(false);
+
+  const handleTestPrinter = async () => {
+    const printer = qzPrinterName(cid);
+    if (!qzEnabled(cid) || !printer) {
+      toast.warning(
+        "QZ Tray não configurado. Habilite e selecione uma impressora em Ajustes › Impressão.",
+      );
+      return;
+    }
+    try {
+      setTestingPrinter(true);
+      await qzConnect();
+      await qzPrintTestReceipt(printer);
+      toast.success(`Cupom de teste enviado para ${printer}.`);
+    } catch (e: any) {
+      toast.error(
+        `QZ Tray indisponível: ${e?.message || "verifique se o serviço está em execução."}`,
+      );
+    } finally {
+      setTestingPrinter(false);
+    }
+  };
   const selectedPaymentMethod = paymentMethods.find((pm) => pm.id === paymentMethodId);
   const requiresDueDate = selectedPaymentMethod?.requires_due_date ?? false;
   const isCashPayment = selectedPaymentMethod?.name?.toLowerCase().includes("dinheiro");
@@ -934,7 +2214,12 @@ function SalesPage() {
     setPaymentMethodId(localStorage.getItem(`${SAVED_SALE_KEY}_paymentMethodId`) || "");
     setDueDate(localStorage.getItem(`${SAVED_SALE_KEY}_dueDate`) || "");
     setAmountReceivedRaw(localStorage.getItem(`${SAVED_SALE_KEY}_amountReceivedRaw`) || "0,00");
+    try {
+      const raw = localStorage.getItem(`${SAVED_SALE_KEY}_payments`);
+      setPayments(raw ? JSON.parse(raw) : []);
+    } catch { setPayments([]); }
     setCurrentSaleId(localStorage.getItem(`${SAVED_SALE_KEY}_saleId`));
+    setReopenedFromNumber(localStorage.getItem(`${SAVED_SALE_KEY}_reopenedNumber`));
 
     // Reset transient UI state
     setShowDiscountFields(false);
@@ -953,6 +2238,7 @@ function SalesPage() {
     localStorage.setItem(`${SAVED_SALE_KEY}_paymentMethodId`, paymentMethodId);
     localStorage.setItem(`${SAVED_SALE_KEY}_dueDate`, dueDate);
     localStorage.setItem(`${SAVED_SALE_KEY}_amountReceivedRaw`, amountReceivedRaw);
+    localStorage.setItem(`${SAVED_SALE_KEY}_payments`, JSON.stringify(payments));
     if (currentSaleId) {
       localStorage.setItem(`${SAVED_SALE_KEY}_saleId`, currentSaleId);
     } else {
@@ -975,6 +2261,7 @@ function SalesPage() {
     paymentMethodId,
     dueDate,
     amountReceivedRaw,
+    payments,
     currentSaleId,
     SAVED_SALE_KEY,
     activeRegisterUserId,
@@ -995,22 +2282,32 @@ function SalesPage() {
           showCustomerData: false,
           showDetailedInstallments: false,
           receiptWidth: "280",
+          fontSizePx: "12",
+          lineHeight: "1.35",
+          boldStrength: "0.4",
         };
   }, [cid]);
 
   const getSaleHtml = (saleData: any) => {
     const fiscal = fiscalSettingsQ.data;
+    const company = companyInfoQ.data as any;
     const customer = customers.find((c) => c.id === saleData.customer_id);
+    const companyName = (company?.name || fiscal?.razao_social || printSettings.header || "").trim();
+    const companyAddr = (fiscal?.endereco || "").trim();
+    const companyPhone = (company?.phone || "").trim();
+    const headerHtml = companyName
+      ? `<div class="header-text">${companyName}</div>${companyAddr ? `<div class="company-sub">${companyAddr}</div>` : ""}${companyPhone ? `<div class="company-sub">Tel: ${companyPhone}</div>` : ""}`
+      : "";
     const fiscalHtml =
       printSettings.showCnpjAddress && fiscal
-        ? `<div class="center" style="font-size: 10px; margin-bottom: 5px;">${fiscal.razao_social ? `<div>${fiscal.razao_social}</div>` : ""}${fiscal.cnpj ? `<div>CNPJ: ${fiscal.cnpj}</div>` : ""}${fiscal.endereco ? `<div>${fiscal.endereco}</div>` : ""}</div>`
+        ? `<div class="center" style="font-size: 10px; margin-bottom: 5px;">${fiscal.cnpj ? `<div>CNPJ: ${fiscal.cnpj}</div>` : ""}</div>`
         : "";
     const customerHtml =
       printSettings.showCustomerData && customer
         ? `<div class="divider"></div><div style="font-size: 10px; margin-bottom: 5px;"><div class="bold">CLIENTE:</div><div>${customer.name}</div>${customer.doc ? `<div>DOC: ${customer.doc}</div>` : ""}</div>`
         : "";
     const itemsHtml = printSettings.showColumns
-      ? `<table style="margin-top: 5px;"><thead><tr><th style="text-align: left">PROD</th><th style="text-align: left">QTD</th><th style="text-align: right">TOTAL</th></tr></thead><tbody>${(saleData.items || []).map((i: any) => `<tr><td>${i.name}</td><td>${i.quantity}</td><td style="text-align: right">${brl(i.quantity * i.unit_price)}</td></tr>`).join("")}</tbody></table>`
+      ? `<table style="margin-top: 5px;"><thead><tr><th style="text-align: left">PROD</th><th style="text-align: center">QTD</th><th style="text-align: right">UNIT</th><th style="text-align: right">TOTAL</th></tr></thead><tbody>${(saleData.items || []).map((i: any) => `<tr><td>${i.name}</td><td style="text-align: center">${i.quantity}</td><td style="text-align: right">${brl(Number(i.unit_price || 0))}</td><td style="text-align: right">${brl(Number(i.quantity || 0) * Number(i.unit_price || 0))}</td></tr>`).join("")}</tbody></table>`
       : "";
     const discountHtml =
       saleData.discount > 0
@@ -1019,8 +2316,22 @@ function SalesPage() {
     const summaryHtml = printSettings.showSummary
       ? `<div class="divider"></div><div class="row"><span>SUBTOTAL:</span> <span>${brl(saleData.subtotal)}</span></div>${discountHtml}`
       : "";
+    const paymentsList = Array.isArray(saleData.payments)
+      ? saleData.payments.filter((p: any) => p?.method)
+      : [];
+    const paymentsHtml =
+      paymentsList.length > 1
+        ? `<div class="divider"></div><div class="row bold"><span>PAGAMENTOS:</span><span></span></div>${paymentsList
+            .map(
+              (p: any) =>
+                `<div class="row"><span>${p.method}:</span> <span>${brl(Number(p.amount || 0))}</span></div>`,
+            )
+            .join("")}`
+        : `<div class="divider"></div><div class="row"><span>MÉTODO:</span> <span>${
+            paymentsList[0]?.method || saleData.paymentMethod || "---"
+          }</span></div>`;
     const totalsHtml = printSettings.showTotals
-      ? `<div class="row bold mt"><span>TOTAL:</span> <span>${brl(saleData.total)}</span></div><div class="divider"></div><div class="row"><span>MÉTODO:</span> <span>${saleData.paymentMethod || "---"}</span></div>`
+      ? `<div class="row bold mt"><span>TOTAL:</span> <span>${brl(saleData.total)}</span></div>${paymentsHtml}`
       : "";
     const installmentsHtml =
       printSettings.showDetailedInstallments &&
@@ -1028,18 +2339,101 @@ function SalesPage() {
       saleData.installments.length > 0
         ? `<div style="font-size: 10px; padding-left: 10px; margin-top: 2px;">${saleData.installments.map((inst: any, idx: number) => `<div>- ${idx + 1}/${saleData.installments.length}: ${brl(inst.amount)} (${new Date(inst.due_date).toLocaleDateString("pt-BR")})</div>`).join("")}</div>`
         : "";
-    return `<html><head><title>Cupom de Venda</title><style>@page { margin: 0; } body { font-family: 'Courier New', Courier, monospace; font-size: 12px; line-height: 1.2; padding: 15px; width: ${printSettings.receiptWidth || "280"}px; margin: 0 auto; color: #000; } h2 { text-align: center; margin: 0 0 5px 0; font-size: 16px; text-transform: uppercase; } .header-text { text-align: center; margin-bottom: 5px; font-weight: bold; } .divider { border-bottom: 1px dashed #000; margin: 8px 0; } .row { display: flex; justify-content: space-between; margin-bottom: 2px; } .bold { font-weight: bold; } .center { text-align: center; } .mt { margin-top: 10px; } table { width: 100%; border-collapse: collapse; } th { text-align: left; border-bottom: 1px solid #000; font-size: 10px; } td { font-size: 10px; padding: 2px 0; } .footer { margin-top: 25px; text-align: center; font-size: 10px; } </style></head><body><h2>COMPROVANTE DE VENDA</h2>${printSettings.header ? `<div class="header-text">${printSettings.header}</div>` : ""}${fiscalHtml}<div class="center">Data: ${new Date().toLocaleString("pt-BR")}</div><div class="center">Venda: #${saleData.number || saleData.id?.slice(0, 6) || "---"}</div>${customerHtml}<div class="divider"></div>${itemsHtml}${summaryHtml}${totalsHtml}${installmentsHtml}<div class="footer"><div>${printSettings.footerMessage}</div><div class="mt" style="font-size: 8px;">Gerado em ${new Date().toLocaleString("pt-BR")}</div></div></body></html>`;
+    const qrUrl = `${window.location.origin}/__l5e/assets-v1/39befd4c-2c54-4182-b44d-7642d3876149/google-review-qr.png`;
+    const reviewHtml = `<div class="review"><div class="review-text">Faça sua avaliação</div><div class="review-sub">Conte-nos como foi a sua experiência</div><img src="${qrUrl}" alt="QR Avaliação" class="review-qr" /></div>`;
+    return `<html><head><title>Cupom de Venda</title><style>${receiptStyle({ widthPx: printSettings.receiptWidth || "280", fontSizePx: printSettings.fontSizePx, lineHeight: printSettings.lineHeight, boldStrength: printSettings.boldStrength })}</style></head><body><h2>COMPROVANTE DE VENDA</h2>${headerHtml}${fiscalHtml}<div class="center">Data: ${new Date().toLocaleString("pt-BR")}</div><div class="center">Venda: #${saleData.number || saleData.id?.slice(0, 6) || "---"}</div>${customerHtml}<div class="divider"></div>${itemsHtml}${summaryHtml}${totalsHtml}${installmentsHtml}<div class="footer"><div>${printSettings.footerMessage}</div></div>${reviewHtml}</body></html>`;
   };
 
-  const handlePrintSale = (saleData: any) => {
-    const win = window.open("", "_blank");
-    if (!win) return;
-    win.document.write(
-      getSaleHtml(saleData) +
-        `<script>window.onload = function() { window.print(); setTimeout(() => window.close(), 500); };</script>`,
-    );
-    win.document.close();
+  const handlePrintSale = (saleData: any, opts?: { auto?: boolean }) => {
+    const html = getSaleHtml(saleData);
+    // Se o QZ Tray estiver habilitado e com impressora configurada,
+    // tenta enviar direto para a impressora térmica. Em qualquer falha
+    // (serviço fora do ar, timeout, impressora indisponível), cai para
+    // a impressão do navegador — inclusive em emissão automática, usando
+    // iframe oculto que não depende de gesto do usuário nem popup.
+    if (qzEnabled(cid) && qzPrinterName(cid)) {
+      qzPrintHtml80mm(html, { widthPx: printSettings.receiptWidth || "280" }).catch((e) => {
+        console.error("[QZ] impressão falhou, caindo para navegador", e);
+        toast.warning(
+          `QZ Tray falhou (${e?.message || "erro desconhecido"}). Usando impressão pelo navegador.`,
+        );
+        fallbackBrowserPrint(html);
+      });
+      return;
+    }
+    fallbackBrowserPrint(html);
   };
+
+
+  const fallbackBrowserPrint = (html: string) => {
+    // Tenta primeiro abrir uma nova janela (melhor UX quando permitido).
+    // Se o navegador bloquear (popup blocker — comum quando a chamada vem
+    // de dentro de um setTimeout, fora do gesto direto do usuário), cai
+    // para um iframe oculto, que não depende de gesto do usuário.
+    try {
+      const win = window.open("", "_blank");
+      if (win) {
+        win.document.write(
+          html +
+            `<script>window.onload = function() { window.print(); setTimeout(() => window.close(), 500); };</script>`,
+        );
+        win.document.close();
+        return;
+      }
+    } catch {
+      /* fallback abaixo */
+    }
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+    const doc = iframe.contentWindow?.document;
+    if (!doc) return;
+    doc.open();
+    doc.write(html);
+    doc.close();
+    const cleanup = () => {
+      setTimeout(() => {
+        try {
+          document.body.removeChild(iframe);
+        } catch {
+          /* noop */
+        }
+      }, 1000);
+    };
+    let printed = false;
+    const trigger = () => {
+      if (printed) return;
+      printed = true;
+      try {
+        if (!iframe.isConnected) return;
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } catch (e) {
+        console.warn("print ignorado (iframe indisponível)", e);
+      } finally {
+        cleanup();
+      }
+    };
+    if (iframe.contentWindow?.document.readyState === "complete") {
+      setTimeout(trigger, 100);
+    } else {
+      iframe.onload = () => setTimeout(trigger, 100);
+    }
+
+  };
+
+  const customerCreditBalanceQ = useQuery({
+    queryKey: ["customer-credit-balance", customerId],
+    queryFn: () => getCustomerCreditBalance(customerId),
+    enabled: !!customerId && customerId !== "none",
+    staleTime: 10_000,
+  });
+  const availableCredit = Number(customerCreditBalanceQ.data ?? 0);
 
   const subtotal = useMemo(() => items.reduce((s, i) => s + i.quantity * i.unit_price, 0), [items]);
   const discountAmount = useMemo(() => {
@@ -1048,75 +2442,341 @@ function SalesPage() {
     return (subtotal * pct) / 100;
   }, [discountMode, discountValueRaw, discountPctRaw, subtotal]);
   const total = Math.max(subtotal - discountAmount, 0);
+  // ID da forma de pagamento "Voucher" cadastrada pelo usuário
+  const voucherMethodId = useMemo(() => findVoucherMethodId(paymentMethods), [paymentMethods]);
+  // Crédito aplicado = soma das linhas de pagamento do tipo "Voucher"
+  const effectiveCredit = useMemo(
+    () => (!voucherMethodId
+      ? 0
+      : payments.filter((p) => p.payment_method_id === voucherMethodId)
+                .reduce((s, p) => s + Number(p.amount || 0), 0)),
+    [payments, voucherMethodId],
+  );
+  // Remove a linha de voucher automaticamente quando o cliente troca/zera carrinho
+  useEffect(() => {
+    if (!voucherMethodId) return;
+    setPayments((prev) => prev.filter((p) => p.payment_method_id !== voucherMethodId));
+    setCreditApplied(0);
+  }, [customerId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-injeta / recalcula / limita a linha de Voucher conforme cliente,
+  // crédito disponível e total. Sempre fixada no topo da lista (a UI reordena
+  // para exibição, mas garantimos aqui que a linha existe e tem valor correto).
+  useEffect(() => {
+    if (!voucherMethodId) return;
+    setPayments((prev) => {
+      const others = prev.filter((p) => p.payment_method_id !== voucherMethodId);
+      const shouldHave =
+        !!customerId && customerId !== "none" && availableCredit > 0;
+      if (!shouldHave) {
+        // Remove voucher se existir
+        if (others.length === prev.length) return prev;
+        return others;
+      }
+      const voucherMethod = paymentMethods.find((m) => m.id === voucherMethodId);
+      const desired = Math.max(0, Number(Math.min(availableCredit, Math.max(total, 0)).toFixed(2)));
+      const voucherRow: PaymentRow = {
+        payment_method_id: voucherMethodId,
+        method: voucherMethod?.name ?? "Voucher",
+        amount: desired,
+        installments: 1,
+        first_due_date: null,
+      };
+      const next = redistributeAfterVoucher([voucherRow, ...others], total, voucherMethodId);
+      const same =
+        next.length === prev.length &&
+        next.every(
+          (p, i) =>
+            p.payment_method_id === prev[i].payment_method_id &&
+            Number(p.amount || 0) === Number(prev[i].amount || 0),
+        );
+      return same ? prev : next;
+    });
+  }, [customerId, total, items.length, availableCredit, voucherMethodId, paymentMethods]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Salvaguarda: garante no máximo UMA linha de voucher, somando valores caso
+  // o editor adicione manualmente uma duplicata.
+  useEffect(() => {
+    if (!voucherMethodId) return;
+    const voucherRows = payments.filter((p) => p.payment_method_id === voucherMethodId);
+    if (voucherRows.length <= 1) return;
+    setPayments((prev) => {
+      const vs = prev.filter((p) => p.payment_method_id === voucherMethodId);
+      if (vs.length <= 1) return prev;
+      const merged: PaymentRow = {
+        ...vs[0],
+        amount: Number(
+          vs.reduce((s, r) => s + Number(r.amount || 0), 0).toFixed(2),
+        ),
+      };
+      const others = prev.filter((p) => p.payment_method_id !== voucherMethodId);
+      return [merged, ...others];
+    });
+  }, [payments, voucherMethodId]);
+
   const change = Math.max(parseCurrencyInput(amountReceivedRaw) - total, 0);
+
+  // Inicializa uma linha default quando há itens mas pagamentos vazios
+  useEffect(() => {
+    if (items.length > 0 && payments.length === 0 && total > 0) {
+      const def = paymentMethods.find((m) => m.active);
+      setPayments([{
+        payment_method_id: def?.id ?? null,
+        method: def?.name ?? "Dinheiro",
+        amount: total,
+        installments: 1,
+        first_due_date: def?.requires_due_date ? new Date().toISOString().slice(0, 10) : null,
+      }]);
+    }
+  }, [items.length, paymentMethods, total]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const paymentsTotal = useMemo(() => payments.reduce((s, p) => s + Number(p.amount || 0), 0), [payments]);
+  // Considera quitado quando a soma dos pagamentos >= total (excedente em dinheiro = troco)
+  const paymentsBalanced = paymentsTotal + 0.01 >= total && payments.length > 0 && total > 0;
+
+  const emitNfceFn = useServerFn(emitNfce);
+  const fetchNfceReceiptFn = useServerFn(fetchNfceReceipt80mm);
+
+
+  const doEmitNfce = async (saleId: string) => {
+    const ambiente = (fiscalSettingsQ.data as any)?.ambiente as string | undefined;
+    updateProgressStep("nfce", { status: "running", detail: "Enviando para a SEFAZ..." });
+    // Não resetar o passo "print" aqui — ele é gerenciado pelo fluxo de impressão em paralelo.
+
+    try {
+      const { data } = await supabase.auth.getSession();
+      const accessToken = data.session?.access_token;
+      if (!accessToken) {
+        updateProgressStep("nfce", { status: "error", detail: "Sessão expirada. Emita manualmente." });
+        updateProgressStep("print", { status: "skipped" });
+        return;
+      }
+      if (!ambiente) {
+        updateProgressStep("nfce", { status: "error", detail: "Ambiente fiscal não configurado." });
+        updateProgressStep("print", { status: "skipped" });
+        return;
+      }
+      const r: any = await emitNfceFn({ data: { saleId, accessToken, expectedAmbiente: ambiente } });
+      qc.invalidateQueries({ queryKey: ["sales-active-fiscal-notes"] });
+      qc.invalidateQueries({ queryKey: ["current-session-fiscal-notes"] });
+      qc.invalidateQueries({ queryKey: ["fiscal-note-by-sale", saleId] });
+      if (r?.status === "autorizada") {
+        updateProgressStep("nfce", { status: "done", detail: "NFC-e autorizada." });
+        // Cupom de vendas é impresso pelo fluxo externo (sempre que autoPrintCoupon estiver ativo).
+        // A DANFE não é impressa automaticamente — o usuário imprime pelo histórico se quiser.
+      } else if (r?.status === "processando") {
+        updateProgressStep("nfce", { status: "done", detail: "NFC-e em processamento." });
+        updateProgressStep("print", { status: "skipped" });
+      } else {
+        updateProgressStep("nfce", {
+          status: "error",
+          detail: "NFC-e: " + (r?.motivo_rejeicao || r?.status || "falha"),
+        });
+        updateProgressStep("print", { status: "skipped" });
+      }
+    } catch (e: any) {
+      updateProgressStep("nfce", { status: "error", detail: e?.message || "Falha ao emitir NFC-e" });
+      updateProgressStep("print", { status: "skipped" });
+    }
+  };
+
+  const triggerAutoOrAskNfce = async (
+    saleId: string,
+    paymentsSnapshot: typeof payments,
+  ): Promise<{ willEmit: boolean }> => {
+    if (nfType !== "nfce") {
+      updateProgressStep("nfce", { status: "skipped", detail: "NFC-e não solicitada" });
+      updateProgressStep("print", { status: "skipped" });
+      return { willEmit: false };
+    }
+    const usedMethodIds = new Set(
+      paymentsSnapshot.map((p) => p.payment_method_id).filter(Boolean) as string[],
+    );
+    const usedMethods = paymentMethods.filter((m) => usedMethodIds.has(m.id));
+    const nonVoucherMethods = usedMethods.filter((m) => m.id !== voucherMethodId);
+    const anyAuto =
+      nonVoucherMethods.length > 0 &&
+      nonVoucherMethods.some((m) => !!(m as any).auto_issue_nfce);
+
+    if (anyAuto) {
+      await doEmitNfce(saleId);
+      return { willEmit: true };
+    }
+    updateProgressStep("nfce", {
+      status: "skipped",
+      detail: "Emissão manual disponível no histórico da venda.",
+    });
+    updateProgressStep("print", { status: "skipped" });
+    return { willEmit: false };
+  };
+
+
+
+
+
+
 
   const sellMut = useMutation({
     mutationFn: async () => {
-      const saleId = await registerSale({
-        companyId: cid,
-        customerId: customerId === "none" ? null : customerId,
-        items: items.map((i) => ({
-          product_id: i.product_id,
-          quantity: i.quantity,
-          unit_price: i.unit_price,
-        })),
-        discount: discountAmount,
-        paymentMethod: selectedPaymentMethod?.name ?? "",
-        dueDate: requiresDueDate ? dueDate || null : null,
-        userId: activeRegisterUserId,
-      });
-      return saleId;
+      if (!paymentsBalanced) {
+        throw new Error("A soma dos pagamentos deve ser maior ou igual ao total da venda.");
+      }
+      const voucherAmount = !voucherMethodId
+        ? 0
+        : payments
+            .filter((p) => p.payment_method_id === voucherMethodId)
+            .reduce((s, p) => s + Number(p.amount || 0), 0);
+      if (voucherAmount > 0 && (!customerId || customerId === "none")) {
+        throw new Error("Selecione o cliente para usar o crédito (voucher).");
+      }
+      if (voucherAmount > availableCredit + 0.01) {
+        throw new Error(`Voucher excede o crédito disponível (${brl(availableCredit)}).`);
+      }
+      // Inicia modal de progresso
+      const showNfceStep = nfType === "nfce" && paymentsHaveAutoNfce(payments);
+      const initialSteps: ProgressStep[] = [
+        { id: "register", label: "Registrando venda", status: "running" },
+        {
+          id: "credit",
+          label: "Aplicando crédito do cliente",
+          status: effectiveCredit > 0 && customerId && customerId !== "none" ? "pending" : "skipped",
+        },
+        ...(showNfceStep
+          ? ([{ id: "nfce", label: "Emitindo NFC-e", status: "pending" }] as ProgressStep[])
+          : []),
+        { id: "print", label: "Imprimindo comprovante", status: "pending" },
+      ];
+      startProgress(initialSteps);
+
+      const realPayments = voucherMethodId
+        ? payments.filter((p) => p.payment_method_id !== voucherMethodId)
+        : payments;
+      const firstReal = realPayments[0];
+      try {
+        const saleId = await registerSale({
+          companyId: cid,
+          customerId: customerId === "none" ? null : customerId,
+          items: items.map((i) => ({
+            product_id: i.product_id,
+            quantity: i.quantity,
+            unit_price: i.unit_price,
+          })),
+          discount: discountAmount + voucherAmount,
+          paymentMethod: selectedPaymentMethod?.name ?? firstReal?.method ?? (voucherAmount > 0 ? "Voucher" : ""),
+          dueDate: requiresDueDate ? dueDate || null : null,
+          payments: realPayments.length > 0 ? (realPayments as SalePaymentInput[]) : undefined,
+          userId: activeRegisterUserId,
+        });
+        try {
+          await supabase.from("sales").update({ nf_type: nfType } as any).eq("id", saleId);
+        } catch (e) {
+          console.warn("Falha ao persistir nf_type", e);
+        }
+        updateProgressStep("register", { status: "done", detail: "Venda registrada com sucesso." });
+        setProgressSaleId(saleId);
+        return saleId;
+
+      } catch (e: any) {
+        updateProgressStep("register", { status: "error", detail: e?.message || "Falha ao registrar venda." });
+        updateProgressStep("credit", { status: "skipped" });
+        updateProgressStep("nfce", { status: "skipped" });
+        updateProgressStep("print", { status: "skipped" });
+        throw e;
+      }
     },
-    onSuccess: (saleId) => {
+    onSuccess: async (saleId) => {
       const soldItems = items.map((i) => ({
         product_id: i.product_id,
         unit_price: i.unit_price,
         name: i.name,
       }));
       void syncMissingProductPrices(soldItems);
-      setFinalizeStep("Emitindo comprovante...");
-      setTimeout(() => {
-        toast.success("Sucesso! Venda registrada.");
-        if (autoPrintCoupon)
-          handlePrintSale({
-            id: saleId,
-            items,
-            subtotal,
-            discount: discountAmount,
-            total,
-            paymentMethod: selectedPaymentMethod?.name ?? "Dinheiro",
+      // Aplica crédito (se houver) — debita FIFO e registra usages
+      if (effectiveCredit > 0 && customerId && customerId !== "none") {
+        updateProgressStep("credit", { status: "running", detail: `Debitando ${brl(effectiveCredit)}...` });
+        try {
+          await applyCustomerCredit(saleId, customerId, effectiveCredit);
+          qc.invalidateQueries({ queryKey: ["customer-credit-balance", customerId] });
+          updateProgressStep("credit", { status: "done", detail: "Crédito aplicado." });
+        } catch (e: any) {
+          updateProgressStep("credit", {
+            status: "error",
+            detail: "Crédito não aplicado: " + (e?.message ?? "erro"),
           });
+        }
+      }
+      // Aguarda emissão/decisão da NFC-e antes de atualizar o histórico
+      const paymentsSnapshot = [...payments];
+      await triggerAutoOrAskNfce(saleId, paymentsSnapshot);
+      // Sempre imprime o cupom de vendas quando autoPrintCoupon estiver ativo,
+      // mesmo que a NFC-e tenha sido emitida. A DANFE fica disponível no histórico.
+      if (autoPrintCoupon) {
+        updateProgressStep("print", { status: "running", detail: "Imprimindo cupom de vendas..." });
+        try {
+          handlePrintSale(
+            {
+              id: saleId,
+              items,
+              subtotal,
+              discount: discountAmount,
+              total,
+              paymentMethod:
+                paymentsSnapshot
+                  .map((p: any) => p?.method)
+                  .filter(Boolean)
+                  .join(" + ") ||
+                selectedPaymentMethod?.name ||
+                "Dinheiro",
+              payments: paymentsSnapshot,
+            },
+            { auto: true },
+          );
+          updateProgressStep("print", { status: "done", detail: "Impressão enviada." });
+        } catch (e: any) {
+          updateProgressStep("print", { status: "error", detail: e?.message || "Falha ao imprimir." });
+        }
+      } else {
+        updateProgressStep("print", { status: "skipped", detail: "Impressão automática desativada." });
+      }
 
-        localStorage.removeItem(`${SAVED_SALE_KEY}_items`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_customerId`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_discountMode`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_discountValueRaw`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_discountPctRaw`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_paymentMethodId`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_dueDate`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_amountReceivedRaw`);
-        localStorage.removeItem(`${SAVED_SALE_KEY}_saleId`);
 
-        setItems([]);
-        setCurrentSaleId(null);
-        setDiscountValueRaw("0,00");
-        setDiscountPctRaw("0");
-        setShowDiscountFields(false);
-        setAmountReceivedRaw("0,00");
-        setCustomerId("none");
-        setDueDate("");
-        setPaymentMethodId("");
-        setCurrentPage(1);
-        stockReservation.releaseAll();
-        qc.invalidateQueries({ queryKey: ["sales", cid] });
-        qc.invalidateQueries({ queryKey: ["products", cid] });
-        qc.invalidateQueries({ queryKey: ["payables", cid] });
-        qc.invalidateQueries({ queryKey: ["movements", cid] });
-        qc.invalidateQueries({ queryKey: ["current-session-sales", cid, currentRegister?.id] });
-        qc.invalidateQueries({ queryKey: ["cash-transactions", currentRegister?.id] });
-        setFinalizeStep(null);
-      }, 500);
+
+      localStorage.removeItem(`${SAVED_SALE_KEY}_items`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_customerId`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_discountMode`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_discountValueRaw`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_discountPctRaw`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_paymentMethodId`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_dueDate`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_amountReceivedRaw`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_payments`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_saleId`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_reopenedNumber`);
+
+      setItems([]);
+      setCurrentSaleId(null);
+      setReopenedFromNumber(null);
+      setDiscountValueRaw("0,00");
+      setDiscountPctRaw("0");
+      setShowDiscountFields(false);
+      setAmountReceivedRaw("0,00");
+      setCustomerId("none"); setNfType("nfce"); localStorage.removeItem(`${SAVED_SALE_KEY}_nfType`);
+      setDueDate("");
+      setPaymentMethodId("");
+      setPayments([]);
+      setCurrentPage(1);
+      stockReservation.releaseAll();
+      qc.invalidateQueries({ queryKey: ["sales", cid] });
+      qc.invalidateQueries({ queryKey: ["sales-paginated", cid] });
+      qc.invalidateQueries({ queryKey: ["products", cid] });
+      qc.invalidateQueries({ queryKey: ["payables", cid] });
+      qc.invalidateQueries({ queryKey: ["movements", cid] });
+      qc.invalidateQueries({ queryKey: ["current-session-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-session-cash-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["cash-transactions", currentRegister?.id] });
+      setFinalizeStep(null);
     },
+
     onError: (e: any) => {
       setFinalizeStep(null);
       toast.error("Falha ao finalizar venda. O carrinho foi mantido para nova tentativa.");
@@ -1134,11 +2794,17 @@ function SalesPage() {
           unit_price: i.unit_price,
         })),
         discount: discountAmount,
-        paymentMethod: selectedPaymentMethod?.name ?? "",
+        paymentMethod: selectedPaymentMethod?.name ?? payments[0]?.method ?? "",
         dueDate: requiresDueDate ? dueDate || null : null,
+        payments: payments.length > 0 ? (payments as SalePaymentInput[]) : undefined,
         userId: activeRegisterUserId,
         status: "aberta",
       });
+      try {
+        await supabase.from("sales").update({ nf_type: nfType } as any).eq("id", saleId);
+      } catch (e) {
+        console.warn("Falha ao persistir nf_type", e);
+      }
       return saleId;
     },
     onSuccess: () => {
@@ -1152,22 +2818,29 @@ function SalesPage() {
       localStorage.removeItem(`${SAVED_SALE_KEY}_paymentMethodId`);
       localStorage.removeItem(`${SAVED_SALE_KEY}_dueDate`);
       localStorage.removeItem(`${SAVED_SALE_KEY}_amountReceivedRaw`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_payments`);
+      localStorage.removeItem(`${SAVED_SALE_KEY}_reopenedNumber`);
 
       setItems([]);
+      setReopenedFromNumber(null);
       setDiscountValueRaw("0,00");
       setDiscountPctRaw("0");
       setShowDiscountFields(false);
       setAmountReceivedRaw("0,00");
-      setCustomerId("none");
+      setCustomerId("none"); setNfType("nfce"); localStorage.removeItem(`${SAVED_SALE_KEY}_nfType`);
       setDueDate("");
       setPaymentMethodId("");
+      setPayments([]);
       setCurrentPage(1);
       stockReservation.releaseAll();
       qc.invalidateQueries({ queryKey: ["sales", cid] });
+      qc.invalidateQueries({ queryKey: ["sales-paginated", cid] });
       qc.invalidateQueries({ queryKey: ["products", cid] });
       qc.invalidateQueries({ queryKey: ["payables", cid] });
       qc.invalidateQueries({ queryKey: ["movements", cid] });
       qc.invalidateQueries({ queryKey: ["current-session-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-session-cash-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-session-open-sales", cid, currentRegister?.id] });
       qc.invalidateQueries({ queryKey: ["cash-transactions", currentRegister?.id] });
     },
     onError: (e: any) => {
@@ -1180,14 +2853,65 @@ function SalesPage() {
       toast.error("Adicione pelo menos um item ao carrinho.");
       return;
     }
+    if (nfType === "nfe") {
+      if (!selectedCustomer) {
+        toast.error("Para Nota Fiscal (NF-e) é obrigatório selecionar um cliente cadastrado.");
+        return;
+      }
+      if (!selectedCustomer.doc || selectedCustomer.doc.replace(/\D/g, "").length < 11) {
+        toast.error("O cliente selecionado precisa ter CPF/CNPJ cadastrado para emissão de NF-e.");
+        return;
+      }
+    }
+
 
     if (total <= 0) {
       toast.error("O valor da venda deve ser maior que zero.");
       return;
     }
 
-    if (!paymentMethodId) {
-      toast.error("Selecione uma forma de pagamento para finalizar a venda.");
+    if (payments.length === 0) {
+      toast.error("Adicione ao menos uma forma de pagamento.");
+      return;
+    }
+
+    // Validação por linha de pagamento
+    for (let i = 0; i < payments.length; i++) {
+      const p = payments[i];
+      const m = paymentMethods.find((x) => x.id === p.payment_method_id);
+      const label = `Pagamento ${i + 1}`;
+      if (!p.payment_method_id) {
+        toast.error(`${label}: selecione a forma de pagamento.`);
+        return;
+      }
+      if (!(Number(p.amount || 0) > 0)) {
+        toast.error(`${label}: informe um valor maior que zero.`);
+        return;
+      }
+      if (m?.requires_due_date && !p.first_due_date) {
+        toast.error(`${label}: informe a data de vencimento.`);
+        return;
+      }
+    }
+
+    // Soma efetiva (excedente em dinheiro vira troco)
+    let effectivePaid = 0;
+    let remainingForCash = total;
+    for (const p of payments) {
+      const m = paymentMethods.find((x) => x.id === p.payment_method_id);
+      const isCash = /dinheiro|cash|especie|espécie/i.test(m?.name ?? p.method ?? "");
+      const amt = Number(p.amount || 0);
+      const eff = isCash ? Math.min(amt, Math.max(0, remainingForCash)) : amt;
+      effectivePaid += eff;
+      remainingForCash -= eff;
+    }
+    const missing = Number((total - effectivePaid).toFixed(2));
+    if (missing > 0.01) {
+      toast.error(`Faltam ${brl(missing)} para cobrir o total da venda (${brl(total)}).`);
+      return;
+    }
+    if (!paymentsBalanced) {
+      toast.error("A soma dos pagamentos deve ser maior ou igual ao total da venda.");
       return;
     }
 
@@ -1199,27 +2923,43 @@ function SalesPage() {
         cancelLabel: "Não, Voltar",
       })
     ) {
-      setFinalizeStep("Validando pagamento...");
-      setTimeout(() => {
-        setFinalizeStep("Registrando venda...");
+      try {
+        setFinalizeStep("Validando pagamento...");
         if (currentSaleId) {
-          updateSaleMut.mutate({
+          const { data: existingSale, error } = await supabase
+            .from("sales")
+            .select("id")
+            .eq("id", currentSaleId)
+            .maybeSingle();
+          if (error) throw error;
+
+          if (!existingSale) {
+            setCurrentSaleId(null);
+            localStorage.removeItem(`${SAVED_SALE_KEY}_saleId`);
+            setFinalizeStep("Registrando venda...");
+            await sellMut.mutateAsync();
+            return;
+          }
+
+          setFinalizeStep("Atualizando venda...");
+          await updateSaleMut.mutateAsync({
             saleId: currentSaleId,
             items,
             discount: discountAmount,
             reason: "Finalização automática",
           });
-          setTimeout(() => {
-            setFinalizeStep("Abatendo estoque...");
-            finalizeOpenMut.mutate(currentSaleId);
-          }, 600);
+          setFinalizeStep("Abatendo estoque...");
+          await finalizeOpenMut.mutateAsync(currentSaleId);
         } else {
-          setTimeout(() => {
-            setFinalizeStep("Abatendo estoque...");
-            sellMut.mutate();
-          }, 600);
+          setFinalizeStep("Registrando venda...");
+          await sellMut.mutateAsync();
         }
-      }, 600);
+      } catch (e: unknown) {
+        setFinalizeStep(null);
+        if (!updateSaleMut.isError && !finalizeOpenMut.isError && !sellMut.isError) {
+          toast.error(e instanceof Error ? e.message : "Falha ao finalizar venda.");
+        }
+      }
     }
   };
 
@@ -1232,7 +2972,7 @@ function SalesPage() {
       try {
         if (!currentSaleId) {
           // Double check before creating to prevent race conditions
-          const { data: existingOpen } = await appwrite
+          const { data: existingOpen } = await supabase
             .from("sales")
             .select("id")
             .eq("company_id", cid)
@@ -1280,8 +3020,11 @@ function SalesPage() {
         setCurrentSaleId(id);
       }
       qc.invalidateQueries({ queryKey: ["sales", cid] });
+      qc.invalidateQueries({ queryKey: ["sales-paginated", cid] });
       qc.invalidateQueries({ queryKey: ["products", cid] });
       qc.invalidateQueries({ queryKey: ["current-session-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-session-cash-sales", cid, currentRegister?.id] });
+      qc.invalidateQueries({ queryKey: ["current-session-open-sales", cid, currentRegister?.id] });
     },
   });
 
@@ -1547,15 +3290,36 @@ function SalesPage() {
     qc.invalidateQueries({ queryKey: ["products-all", cid] });
   };
 
+  // Índice de códigos de sub-marca (product_references) por produto.
+  // Usa a query dedicada productRefsQ como fonte da verdade (independente do
+  // que veio agregado em `products`), garantindo que a busca no PDV encontre
+  // o produto por qualquer código de marca cadastrado.
+  const refsByProductId = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const r of (productRefsQ.data ?? []) as any[]) {
+      const code = (r?.manufacturer_code || "").trim();
+      if (!code || !r?.product_id) continue;
+      const arr = map.get(r.product_id) ?? [];
+      arr.push(code);
+      map.set(r.product_id, arr);
+    }
+    return map;
+  }, [productRefsQ.data]);
+
   const handleBarcodeSubmit = (val: string) => {
     const code = val.trim();
     if (!code) return;
-    const product = products.find(
-      (p: any) =>
-        (p.sku && p.sku.trim() === code) ||
-        (p.alternative_code && p.alternative_code.trim() === code) ||
-        p.id === code,
-    );
+    const upper = code.toUpperCase();
+    const product = products.find((p: any) => {
+      if (p.id === code) return true;
+      if (p.sku && p.sku.trim().toUpperCase() === upper) return true;
+      if (p.alternative_code && p.alternative_code.trim().toUpperCase() === upper) return true;
+      const refs = refsByProductId.get(p.id) ?? [];
+      if (refs.some((r) => r.toUpperCase() === upper)) return true;
+      const attached = (p.product_references || []) as any[];
+      return attached.some((r) => (r?.manufacturer_code || "").trim().toUpperCase() === upper);
+    });
+
     if (product) {
       const hasStockCode = !!(product.alternative_code && product.alternative_code.trim());
       addItem(product);
@@ -1564,6 +3328,63 @@ function SalesPage() {
       toast.error("Produto não encontrado.");
     }
   };
+
+  // Busca incremental para autocomplete do leitor (matching local em memória).
+  // Prioriza match exato e prefixo em alternative_code/sku e códigos de marca.
+  const barcodeSearch = useMemo(
+    () => (term: string) => {
+      const t = term.trim().toUpperCase();
+      if (t.length < 2) return [] as any[];
+      const out: { score: number; item: any }[] = [];
+      for (const p of products as any[]) {
+        const alt = (p.alternative_code || "").toUpperCase();
+        const sku = (p.sku || "").toUpperCase();
+        const name = (p.name || "").toUpperCase();
+        const attached: string[] = ((p.product_references || []) as any[])
+          .map((r) => (r?.manufacturer_code || "").toUpperCase())
+          .filter(Boolean);
+        const fromMap = (refsByProductId.get(p.id) ?? []).map((r) => r.toUpperCase());
+        const refs = Array.from(new Set([...attached, ...fromMap]));
+        let score = 0;
+        let matchedRef = "";
+        if (alt === t || sku === t) score = 100;
+        else if (refs.some((r) => r === t)) {
+          score = 95;
+          matchedRef = refs.find((r) => r === t) || "";
+        } else if (alt.startsWith(t)) score = 80;
+        else if (sku.startsWith(t)) score = 70;
+        else if (refs.some((r) => r.startsWith(t))) {
+          score = 65;
+          matchedRef = refs.find((r) => r.startsWith(t)) || "";
+        } else if (alt.includes(t)) score = 50;
+        else if (sku.includes(t)) score = 40;
+        else if (refs.some((r) => r.includes(t))) {
+          score = 35;
+          matchedRef = refs.find((r) => r.includes(t)) || "";
+        } else if (name.includes(t)) score = 20;
+        if (score > 0) {
+          const sublabelParts = [
+            p.sku && `SKU ${p.sku}`,
+            matchedRef && `REF ${matchedRef}`,
+            `Estoque: ${p.stock ?? 0}`,
+          ].filter(Boolean);
+          out.push({
+            score,
+            item: {
+              id: p.id,
+              label: `${p.alternative_code || p.sku || "—"} · ${p.name}`,
+              sublabel: sublabelParts.join(" · "),
+              payload: p,
+            },
+          });
+        }
+        if (out.length > 64) break;
+      }
+      out.sort((a, b) => b.score - a.score);
+      return out.map((o) => o.item);
+    },
+    [products, refsByProductId],
+  );
 
   const handleUnlock = async () => {
     try {
@@ -1615,7 +3436,7 @@ function SalesPage() {
   return (
     <>
       <div className="space-y-4 md:space-y-6 pb-24 md:pb-12 pdv-container">
-        {!isCashOpen && (
+        {!isCashOpen && !viewingClosedRegister && !isCashLoading && (
           <div className="bg-destructive text-destructive-foreground px-4 py-3 flex items-center justify-center gap-2 font-bold animate-in fade-in slide-in-from-top duration-300 rounded-lg shadow-md mb-4 sticky top-0 z-50">
             <AlertCircle className="size-5" />
             <span>CAIXA FECHADO - ABRA O CAIXA PARA INICIAR AS VENDAS</span>
@@ -1630,15 +3451,15 @@ function SalesPage() {
             />
             <div className="flex items-center gap-2">
               <Badge
-                variant={isCashOpen ? "default" : "secondary"}
+                variant={isCashOpen && !viewingClosedRegister ? "default" : "secondary"}
                 className={cn(
                   "text-[10px] md:text-xs",
-                  isCashOpen
+                  isCashOpen && !viewingClosedRegister
                     ? "bg-green-500/10 text-green-600 hover:bg-green-500/20 border-green-500/20"
                     : "",
                 )}
               >
-                {isCashOpen ? "Caixa Aberto" : "Caixa Fechado"}
+                {viewingClosedRegister ? "Visualizando caixa fechado" : isCashOpen ? "Caixa Aberto" : "Caixa Fechado"}
               </Badge>
               {isLocked && (
                 <Badge
@@ -1648,7 +3469,7 @@ function SalesPage() {
                   Bloqueado
                 </Badge>
               )}
-              {isCashOpen && (
+              {isCashOpen && !viewingClosedRegister && (
                 <Badge
                   variant="outline"
                   className="text-[10px] md:text-xs border-green-500 text-green-600"
@@ -1660,7 +3481,7 @@ function SalesPage() {
           </div>
 
           <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
-            {allOpenRegisters && allOpenRegisters.length > 0 && (
+            {!viewingClosedRegister && allOpenRegisters && allOpenRegisters.length > 0 && (
               <div className="flex items-center gap-2 bg-muted/50 p-1 rounded-lg border shrink-0">
                 <User className="size-4 ml-2 text-muted-foreground" />
                 <Select
@@ -1694,7 +3515,7 @@ function SalesPage() {
                 </Select>
               </div>
             )}
-            {isCashOpen && (
+            {isCashOpen && !viewingClosedRegister && (
               <Badge
                 variant="outline"
                 className="h-10 px-3 flex items-center gap-2 border-green-200 bg-green-50 text-green-700 shrink-0"
@@ -1703,41 +3524,104 @@ function SalesPage() {
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
                 </span>
-                Saldo: {brl(currentCashBalance)}
+                Saldo: {cashMask(brl(currentCashBalance))}
+                {cashCanToggle && (
+                  <button
+                    type="button"
+                    onClick={cashToggle}
+                    className="ml-1 inline-flex items-center justify-center text-green-700 hover:text-green-900"
+                    title={cashHidden ? "Mostrar saldo" : "Ocultar saldo"}
+                  >
+                    {cashHidden ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
+                  </button>
+                )}
               </Badge>
             )}
+
+            {isCashOpen && !viewingClosedRegister && items.length > 0 && (
+              <Badge
+                variant="outline"
+                className="h-10 px-3 flex items-center gap-2 border-amber-300 bg-amber-50 text-amber-800 shrink-0"
+                title="Venda em andamento no carrinho — finalize ou descarte para fechar o caixa"
+              >
+                <ShoppingCart className="size-4" />
+                Venda em andamento: {items.length} item(ns) · {brl(total)}
+              </Badge>
+            )}
+
+
+
+
           </div>
+
         </div>
 
         <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-          {!isCashOpen && canOpenCash && (
+          {!isCashOpen && !viewingClosedRegister && canOpenCash && (
             <Button
               size="sm"
               className="bg-brand-red hover:bg-brand-red/90"
-              onClick={() => setManagerWantsToOpen(true)}
+              onClick={() => {
+                setManagerWantsToOpen(true);
+              }}
               disabled={isOpening}
             >
               {isOpening ? "Abrindo..." : "Abrir Caixa"}
             </Button>
           )}
-          {isCashOpen && (
+
+
+
+
+
+          {isCashOpen && !viewingClosedRegister && (
             <>
               {items.length === 0 && (
                 <Button variant="outline" size="sm" onClick={handleToggleLock}>
                   <LockIcon className="mr-2 size-4" /> Bloquear
                 </Button>
               )}
-              {!hasOpenSales && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="text-brand-red border-brand-red/20 hover:bg-brand-red/5"
-                  onClick={() => setShowCloseModal(true)}
-                >
-                  <Ban className="mr-2 size-4" /> Fechar Caixa
-                </Button>
-              )}
-              {!hasOpenSales &&
+              <SangriaButton
+                currentRegister={currentRegister}
+                transactions={(currentTransactionsQ.data as any[]) || []}
+                addTransaction={addTransaction as any}
+                size="sm"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-brand-red border-brand-red/20 hover:bg-brand-red/5"
+                title="Fechar o caixa atual"
+                onClick={handleCloseCashClick}
+
+              >
+                <Ban className="mr-2 size-4" /> Fechar Caixa
+              </Button>
+
+              <OverdueTasksDialog
+                open={overdueCloseOpen}
+                onOpenChange={setOverdueCloseOpen}
+                companyId={cid}
+                userId={user?.id}
+                continueLabel="Continuar fechamento"
+                onContinue={() => void proceedCloseCash()}
+              />
+
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleTestClosingReceipt}
+                title="Imprimir uma prévia/teste do cupom de fechamento com as configurações atuais de impressão"
+              >
+                <Receipt className="mr-2 size-4" /> Testar cupom de fechamento
+              </Button>
+
+
+
+              {currentRegister?.user_id_open === user?.id &&
+                !hasOpenSales &&
+                !sessionHasFiscalNote &&
                 (currentSessionSalesQ.data?.length || 0) === 0 &&
                 (currentTransactionsQ.data?.length || 0) === 0 && (
                   <Button
@@ -1750,12 +3634,13 @@ function SalesPage() {
                     <Trash2 className="mr-2 size-4" /> Cancelar Abertura
                   </Button>
                 )}
+
             </>
           )}
         </div>
 
         <Dialog
-          open={(managerWantsToOpen || (!isCashOpen && !hasSpecialAccess)) && !isCashLoading}
+          open={(managerWantsToOpen || (!isCashOpen && !viewingClosedRegister && !hasSpecialAccess)) && !isCashLoading}
           onOpenChange={(open) => {
             if (!open) {
               setManagerWantsToOpen(false);
@@ -1783,9 +3668,33 @@ function SalesPage() {
                     Consulte um administrador para liberar seu acesso.
                   </p>
                 </div>
+              ) : myOpenRegister ? (
+                <div className="space-y-3 rounded-md border border-amber-500 bg-amber-50 dark:bg-amber-950/20 p-3">
+                  <p className="text-sm text-amber-900 dark:text-amber-100">
+                    <strong>Você já possui um caixa aberto</strong> desde{" "}
+                    {new Date(myOpenRegister.opened_at).toLocaleString("pt-BR")}. Feche-o antes de
+                    abrir um novo.
+                  </p>
+                  <Button
+                    className="w-full bg-brand-red hover:bg-brand-red/90"
+                    onClick={() => {
+                      setManagerWantsToOpen(false);
+                      setActiveRegisterUserId(user!.id);
+                      try {
+                        localStorage.setItem(SELECTED_CAIXA_USER_KEY, user!.id);
+                      } catch {
+                        /* ignore */
+                      }
+                      setShowCloseModal(true);
+                    }}
+                  >
+                    <Ban className="mr-2 size-4" /> Fechar caixa aberto
+                  </Button>
+                </div>
               ) : (
                 <>
                   {hasSpecialAccess ? (
+
                     <div className="space-y-2">
                       <Label htmlFor="opening-user">Operador do Caixa</Label>
                       <Select
@@ -1832,12 +3741,13 @@ function SalesPage() {
               >
                 Voltar para Início
               </Button>
-              {canOpenCash && (
+              {canOpenCash && !myOpenRegister && (
                 <Button
                   className="w-full sm:w-auto bg-brand-red hover:bg-brand-red/90"
                   onClick={handleOpenRegister}
-                  disabled={isOpening}
+                  disabled={isOpening || !!selectedOperatorOpenRegister}
                 >
+
                   {isOpening ? "Abrindo..." : "Confirmar Abertura"}
                 </Button>
               )}
@@ -1845,13 +3755,51 @@ function SalesPage() {
           </DialogContent>
         </Dialog>
 
-        {isCashOpen && (
+        {(isCashOpen || viewingClosedRegister) && (
           <>
+            {isCashOpen && !viewingClosedRegister && (
             <div className="grid gap-4 lg:gap-6 lg:grid-cols-3">
-              <Card className="p-4 sm:p-5 lg:col-span-2 space-y-4">
+              <Card className={`p-4 sm:p-5 lg:col-span-2 space-y-4 ${reopenedFromNumber ? "border-2 border-amber-500 ring-2 ring-amber-500/30 bg-amber-50/40 dark:bg-amber-950/20" : ""}`}>
                 <div className="flex items-center gap-2">
                   <ShoppingCart className="size-4 text-brand-red" />
-                  <h3 className="font-semibold">Nova venda</h3>
+                  <h3 className="font-semibold">{reopenedFromNumber ? `Editando venda #${reopenedFromNumber}` : "Nova venda"}</h3>
+                </div>
+                {reopenedFromNumber && (
+                  <div className="rounded-md border-2 border-amber-500 bg-amber-100/70 dark:bg-amber-900/30 px-3 py-2 flex items-start gap-2 text-amber-900 dark:text-amber-100">
+                    <CalendarClock className="size-4 mt-0.5 shrink-0" />
+                    <div className="text-sm flex-1">
+                      <strong>Venda #{reopenedFromNumber} reaberta.</strong> Os itens originais foram carregados no carrinho. Ajuste e finalize novamente para gerar os recebíveis atualizados.
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs text-amber-900 dark:text-amber-100 hover:bg-amber-200/60"
+                      onClick={() => {
+                        setReopenedFromNumber(null);
+                        try { localStorage.removeItem(`${SAVED_SALE_KEY}_reopenedNumber`); } catch {}
+                      }}
+                    >
+                      Ocultar
+                    </Button>
+                  </div>
+                )}
+                <div className="space-y-2">
+                  <Label>Tipo de Nota Fiscal</Label>
+                  <Select value={nfType} onValueChange={(v) => setNfType(v as any)}>
+                    <SelectTrigger className="w-full sm:max-w-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      
+                      <SelectItem value="nfce">Cupom Fiscal (NFC-e)</SelectItem>
+                      <SelectItem value="nfe">Nota Fiscal (NF-e) — exige cliente</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {nfType === "nfe" && (!selectedCustomer || !selectedCustomer.doc) && (
+                    <p className="text-xs text-destructive">
+                      Selecione um cliente cadastrado com CPF/CNPJ para emitir NF-e.
+                    </p>
+                  )}
                 </div>
                 <div className="grid gap-3 md:grid-cols-3">
                   <div className="space-y-2">
@@ -1959,7 +3907,13 @@ function SalesPage() {
                         ))}
                       </SelectContent>
                     </Select>
+                    {customerId !== "none" && availableCredit > 0 && (
+                      <div className="mt-2 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+                        Cliente possui <strong>{brl(availableCredit)}</strong> em crédito.
+                      </div>
+                    )}
                   </div>
+
                   <div className="space-y-2">
                     <div className="flex items-center min-h-7">
                       <Label>Buscar produto</Label>
@@ -1982,27 +3936,11 @@ function SalesPage() {
                     <div className="flex items-center min-h-7">
                       <Label>Leitor de Código (SKU)</Label>
                     </div>
-                    <div className="relative">
-                      <Barcode className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                      <Input
-                        value={barcodeInput}
-                        onChange={(e) => setBarcodeInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleBarcodeSubmit(barcodeInput);
-                        }}
-                        placeholder="Código SKU…"
-                        className="pl-9 pr-9"
-                      />
-                      {barcodeInput && (
-                        <button
-                          type="button"
-                          onClick={() => setBarcodeInput("")}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                        >
-                          <X className="size-4" />
-                        </button>
-                      )}
-                    </div>
+                    <BarcodeScanInput
+                      onSubmit={handleBarcodeSubmit}
+                      search={barcodeSearch}
+                      onPick={(s) => addItem(s.payload)}
+                    />
                   </div>
                 </div>
                 <Dialog
@@ -2024,7 +3962,7 @@ function SalesPage() {
                     <DialogHeader className="px-5 pt-5 pb-3">
                       <DialogTitle>Buscar produto</DialogTitle>
                       <DialogDescription>
-                        Pesquisa em nome, código (SKU/Alternativo), marca e detalhes do produto.
+                        Pesquisa instantânea em nome, SKU, código alternativo, marca, código do fabricante e demais campos.
                       </DialogDescription>
                     </DialogHeader>
                     <div className="px-5 pb-3 flex gap-2">
@@ -2034,10 +3972,27 @@ function SalesPage() {
                           autoFocus
                           value={productSearch}
                           onChange={(e) => setProductSearch(e.target.value)}
-                          placeholder="Digite qualquer termo…"
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape" && productSearch) {
+                              e.preventDefault();
+                              setProductSearch("");
+                            }
+                          }}
+                          placeholder="Digite para buscar…"
                           className="pl-9"
                         />
                       </div>
+                      {productSearch && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setProductSearch("");
+                          }}
+                        >
+                          Limpar
+                        </Button>
+                      )}
                       <Select value={productBrandFilter} onValueChange={setProductBrandFilter}>
                         <SelectTrigger className="w-[180px]">
                           <SelectValue placeholder="Marca" />
@@ -2054,48 +4009,14 @@ function SalesPage() {
                     </div>
                     <div className="max-h-[60vh] overflow-y-auto border-t">
                       {productsQ.isLoading ? (
-                        <div className="p-12 text-center text-muted-foreground">
-                          Carregando produtos...
-                        </div>
+                        <ProductPickerSkeleton />
                       ) : productsQ.isError ? (
                         <div className="p-12 text-center text-destructive font-medium">
                           Erro ao carregar produtos.
                         </div>
                       ) : (
                         (() => {
-                          const term = normalize(productSearch.trim());
-                          const tokens = term.split(/\s+/).filter(Boolean);
-                          const filtered = products
-                            .filter((p: any) => {
-                              if (
-                                !productMatchesBrand(
-                                  p.id,
-                                  p.brand_id,
-                                  productBrandFilter,
-                                  productRefsBrandMap,
-                                )
-                              )
-                                return false;
-                              if (!tokens.length) return true;
-                              const brandName =
-                                brands.find((b) => b.id === p.brand_id)?.name || p.brand || "";
-                              const haystack = normalize(
-                                [
-                                  p.name,
-                                  p.sku,
-                                  p.alternative_code,
-                                  (p as any).barcode,
-                                  brandName,
-                                  p.description,
-                                  p.unit,
-                                  productRefsMap.get(p.id) || "",
-                                ]
-                                  .filter(Boolean)
-                                  .join(" "),
-                              );
-                              return tokens.every((t) => haystack.includes(t));
-                            })
-                            .sort((a: any, b: any) => compareProductNames(a.name, b.name));
+                          const filtered = productPickerResults;
 
                           if (filtered.length === 0)
                             return (
@@ -2282,7 +4203,11 @@ function SalesPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {items.length === 0 ? (
+                      {!isCartHydrated ? (
+                        Array.from({ length: 3 }).map((_, idx) => (
+                          <CartItemSkeleton key={idx} />
+                        ))
+                      ) : items.length === 0 ? (
                         <TableRow>
                           <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
                             Carrinho vazio
@@ -2339,7 +4264,11 @@ function SalesPage() {
                   </Table>
                 </div>
                 <div className="sm:hidden space-y-2">
-                  {items.length === 0 ? (
+                  {!isCartHydrated ? (
+                    Array.from({ length: 3 }).map((_, idx) => (
+                      <CartItemSkeletonMobile key={idx} />
+                    ))
+                  ) : items.length === 0 ? (
                     <div className="rounded-md border border-border p-6 text-center text-sm text-muted-foreground">
                       Carrinho vazio
                     </div>
@@ -2414,6 +4343,11 @@ function SalesPage() {
                   <Receipt className="size-4 text-brand-orange" />
                   <h3 className="font-semibold">Resumo</h3>
                 </div>
+                {items.length === 0 ? (
+                  <div className="text-sm text-muted-foreground text-center py-8 border border-dashed rounded-md">
+                    Adicione produtos ao carrinho para concluir a venda.
+                  </div>
+                ) : (<>
                 <div className="space-y-2">
                   <Label>Forma de pagamento</Label>
                   <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
@@ -2484,32 +4418,15 @@ function SalesPage() {
                       </form>
                     </DialogContent>
                   </Dialog>
-                  <Select value={paymentMethodId} onValueChange={setPaymentMethodId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Selecione…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {paymentMethods
-                        .filter((pm) => pm.active)
-                        .map((pm) => (
-                          <SelectItem key={pm.id} value={pm.id}>
-                            {pm.name}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
+                  <SalePaymentsEditor
+                    total={total}
+                    paymentMethods={paymentMethods}
+                    payments={payments}
+                    onChange={setPayments}
+                    voucherMethodId={voucherMethodId}
+                    maxVoucher={customerId !== "none" ? availableCredit : 0}
+                  />
                 </div>
-                {requiresDueDate && (
-                  <div className="space-y-2">
-                    <Label>Vencimento</Label>
-                    <Input
-                      type="date"
-                      required
-                      value={dueDate}
-                      onChange={(e) => setDueDate(e.target.value)}
-                    />
-                  </div>
-                )}
                 {!showDiscountFields && discountAmount === 0 ? (
                   <Button
                     type="button"
@@ -2629,9 +4546,39 @@ function SalesPage() {
                   <Switch
                     id="auto_print"
                     checked={autoPrintCoupon}
-                    onCheckedChange={setAutoPrintCoupon}
+                    onCheckedChange={(v) => {
+                      setAutoPrintCoupon(v);
+                      // Persiste sincronamente para garantir leitura correta na finalização imediata
+                      try {
+                        localStorage.setItem(`auto_print_coupon_${cid}`, String(v));
+                      } catch {}
+                    }}
                   />
+
                 </div>
+                {autoPrintCoupon && (
+                  <div className="flex items-center justify-between gap-2 -mt-1 mb-3 px-1">
+                    <span className="text-xs text-muted-foreground">
+                      {qzEnabled(cid) && qzPrinterName(cid)
+                        ? `Impressora: ${qzPrinterName(cid)}`
+                        : "QZ Tray não configurado nesta máquina"}
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={handleTestPrinter}
+                      disabled={testingPrinter}
+                    >
+                      {testingPrinter ? (
+                        <Loader2 className="size-3.5 mr-1 animate-spin" />
+                      ) : (
+                        <Printer className="size-3.5 mr-1" />
+                      )}
+                      Testar impressora
+                    </Button>
+                  </div>
+                )}
                 <div className="flex flex-col gap-2">
                   <div className="flex gap-2">
                     <Button
@@ -2644,7 +4591,14 @@ function SalesPage() {
                           subtotal: subtotal,
                           discount: discountAmount,
                           total: total,
-                          paymentMethod: selectedPaymentMethod?.name ?? "Dinheiro",
+                          paymentMethod:
+                            payments
+                              .map((p: any) => p?.method)
+                              .filter(Boolean)
+                              .join(" + ") ||
+                            selectedPaymentMethod?.name ||
+                            "Dinheiro",
+                          payments,
                           number: "PRÉVIA",
                         };
                         setPreviewTitle("Prévia do Cupom");
@@ -2676,12 +4630,15 @@ function SalesPage() {
                           // Limpa estado local do carrinho
                           setItems([]);
                           setCurrentSaleId(null);
+                          setReopenedFromNumber(null);
                           setDiscountValueRaw("0,00");
                           setDiscountPctRaw("0");
-                          setCustomerId("none");
+                          setCustomerId("none"); setNfType("nfce"); localStorage.removeItem(`${SAVED_SALE_KEY}_nfType`);
                           setPaymentMethodId("");
+                          setPayments([]);
                           localStorage.removeItem(`${SAVED_SALE_KEY}_items`);
                           localStorage.removeItem(`${SAVED_SALE_KEY}_saleId`);
+                          localStorage.removeItem(`${SAVED_SALE_KEY}_reopenedNumber`);
                           stockReservation.releaseAll();
                         }
                       }}
@@ -2705,8 +4662,9 @@ function SalesPage() {
                         finalizeOpenMut.isPending ||
                         updateSaleMut.isPending ||
                         items.length === 0 ||
-                        !paymentMethodId ||
-                        !isCashOpen
+                        !paymentsBalanced ||
+                        !isCashOpen ||
+                        (nfType === "nfe" && (!selectedCustomer || !selectedCustomer.doc))
                       }
                       className="w-full bg-brand-red hover:bg-brand-red/90 text-brand-red-foreground py-6 text-lg"
                     >
@@ -2717,25 +4675,93 @@ function SalesPage() {
                     </Button>
                   </div>
                 </div>
+                </>)}
               </Card>
             </div>
+            )}
 
             {/* Seção de Vendas Recentes Removida e integrada ao Histórico abaixo */}
 
             <div id="historico" className="mt-6">
               <Card className="p-4">
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-4">
-                  <div className="flex items-center gap-2">
-                    <Receipt className="size-4 text-brand-red" />
-                    <h3 className="font-semibold">Histórico de Vendas</h3>
-                    <PrintButton
-                      onClick={handlePrint}
-                      disabled={filteredSales.length === 0}
-                      className="h-7 px-2 text-[10px]"
-                    />
+                {viewingClosedRegister && (
+                  <div className="mb-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => navigate({ to: "/app/fechamento-caixa" })}
+                      className="h-8"
+                    >
+                      <ArrowLeft className="size-3.5 mr-1" />
+                      Voltar para Gestão de Caixa
+                    </Button>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="relative flex-1 min-w-[200px]">
+                )}
+                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3 mb-4">
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex items-center gap-2">
+                      <Receipt className="size-4 text-brand-red" />
+                      <h3 className="font-semibold">Histórico de Vendas</h3>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-[10px]"
+                        onClick={() => {
+                          qc.invalidateQueries({ queryKey: ["sales-paginated", cid] });
+                          qc.invalidateQueries({ queryKey: ["sales", cid] });
+                          toast.success("Histórico atualizado");
+                        }}
+                        disabled={salesQ.isFetching}
+                        title="Atualizar histórico"
+                      >
+                        <RefreshCw className={cn("size-3.5 mr-1", salesQ.isFetching && "animate-spin")} />
+                        Atualizar
+                      </Button>
+                      <PrintButton
+                        onClick={handlePrint}
+                        disabled={filteredSales.length === 0}
+                        className="h-7 px-2 text-[10px]"
+                      />
+                    </div>
+                    <div className="ml-6 space-y-0.5">
+                      <p className="text-[11px] text-muted-foreground">
+                        {totalSalesCount} {totalSalesCount === 1 ? "registro" : "registros"}
+                        {totalPages > 1 && ` • página ${currentPage} de ${totalPages}`}
+                      </p>
+                      {paginatedSales.length > 0 && (() => {
+                        const bruto = paginatedSales
+                          .filter((s: any) => s.status === "concluida" && s.type !== "devolucao")
+                          .reduce((a: number, s: any) => a + Number(s.total ?? 0), 0);
+                        const cancelado = paginatedSales
+                          .filter((s: any) => s.status === "cancelada")
+                          .reduce((a: number, s: any) => a + Number(s.total ?? 0), 0);
+                        const devolvido = paginatedSales
+                          .filter((s: any) => s.type === "devolucao" && s.status === "concluida")
+                          .reduce((a: number, s: any) => a + Number(s.total ?? 0), 0);
+                        const sangrias = isCashOpen && !viewingClosedRegister ? currentCashSummary.withdrawals : 0;
+                        const liquido = bruto - devolvido - sangrias;
+                        return (
+                          <p className="text-[11px] flex flex-wrap gap-x-3 gap-y-0.5">
+                            <span className="text-muted-foreground">Bruto: <span className="font-medium text-foreground">{brl(bruto)}</span></span>
+                            {cancelado > 0 && (
+                              <span className="text-destructive">Canceladas: - {brl(cancelado)}</span>
+                            )}
+                            {devolvido > 0 && (
+                              <span className="text-orange-600">Devoluções: - {brl(devolvido)}</span>
+                            )}
+                            {sangrias > 0 && (
+                              <span className="text-muted-foreground">Sangrias: - {brl(sangrias)}</span>
+                            )}
+                            <span className="text-muted-foreground">Líquido: <span className="font-semibold text-success">{brl(liquido)}</span></span>
+                          </p>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 sm:flex sm:flex-wrap sm:items-center gap-2 w-full lg:w-auto">
+                    <div className="relative col-span-2 sm:col-span-1 sm:flex-1 sm:min-w-[200px]">
                       <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
                       <Input
                         placeholder="Buscar Nº venda, cliente..."
@@ -2771,7 +4797,6 @@ function SalesPage() {
                         <SelectItem value="todas">Todos status</SelectItem>
                         <SelectItem value="concluida">Concluídas</SelectItem>
                         <SelectItem value="cancelada">Canceladas</SelectItem>
-                        <SelectItem value="aberta">Abertas</SelectItem>
                         <SelectItem value="aguardando">Aguardando Confirmação</SelectItem>
                       </SelectContent>
                     </Select>
@@ -2799,6 +4824,154 @@ function SalesPage() {
                       </SelectContent>
                     </Select>
                   </div>
+                </div>
+
+                {/* Mobile cards */}
+                <div className="md:hidden space-y-2">
+                  {salesQ.isLoading ? (
+                    <div className="text-center text-muted-foreground py-8 text-sm">Carregando...</div>
+                  ) : paginatedSales.length === 0 ? (
+                    <div className="text-center text-muted-foreground py-8 text-sm">Nenhuma venda encontrada</div>
+                  ) : (
+                    paginatedSales.map((s: any) => {
+                      const c = customers.find((x) => x.id === s.customer_id);
+                      const hasNote = !!activeNoteMap[s.id];
+                      const isReturn = s.type === "devolucao";
+                      const returnedBy = returnsMap[s.id];
+                      const originNumber = isReturn ? originsMap[s.origin_sale_id] : null;
+                      return (
+                        <div key={s.id} className={cn(
+                          "rounded-lg border border-border bg-card p-3 flex flex-col gap-2 border-l-4",
+                          isReturn ? "border-l-orange-500 bg-orange-50/30" :
+                          returnedBy ? "border-l-orange-400" :
+                          hasNote ? "border-l-green-500" : "border-l-red-500",
+                        )}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-1.5 text-xs text-muted-foreground flex-wrap">
+                                <span className="font-mono">#{s.number}</span>
+                                {emailSentMap[s.id] && (
+                                  <TooltipProvider>
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span><MailCheck className="size-3.5 text-green-600" aria-label="E-mail da nota enviado com sucesso" /></span>
+                                      </TooltipTrigger>
+                                      <TooltipContent className="bg-green-600 text-white">E-mail da nota (XML + PDF) enviado com sucesso</TooltipContent>
+                                    </Tooltip>
+                                  </TooltipProvider>
+                                )}
+                                {emailFailedMap[s.id] && (
+                                  <TooltipProvider>
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span><MailX className="size-3.5 text-red-600" aria-label="Falha no envio do e-mail da nota" /></span>
+                                      </TooltipTrigger>
+                                      <TooltipContent className="bg-red-600 text-white">Falha no envio do e-mail da nota (XML + PDF)</TooltipContent>
+                                    </Tooltip>
+                                  </TooltipProvider>
+                                )}
+                                <span>•</span>
+                                <span>{dt(s.created_at)}</span>
+                                {isReturn && (
+                                  <Badge variant="outline" className="border-orange-500 text-orange-700 bg-orange-50 text-[9px] px-1 py-0">
+                                    Devolução de #{originNumber ?? "?"}
+                                  </Badge>
+                                )}
+                                {returnedBy && (
+                                  <Badge variant="outline" className="border-orange-500 text-orange-700 bg-orange-50 text-[9px] px-1 py-0">
+                                    Devolvida por #{returnedBy.number}
+                                  </Badge>
+                                )}
+                                {s.origin === "delivery" && (
+                                  <Badge variant="outline" className="border-orange-500 text-orange-600 bg-orange-50 text-[9px] px-1 py-0">
+                                    Delivery
+                                  </Badge>
+                                )}
+                              </div>
+
+                              <div className="font-semibold truncate mt-0.5">{c?.name ?? "Consumidor final"}</div>
+                              <div className="text-[11px] text-muted-foreground truncate capitalize">
+                                {s.payment_method} • {s.profiles?.name || s.profiles?.email || "—"}
+                              </div>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  "capitalize text-[10px]",
+                                  s.status === "aberta" && "border-amber-500 text-amber-600 bg-amber-50",
+                                  s.status === "concluida" && "border-green-500 text-green-600 bg-green-50",
+                                  s.status === "cancelada" && "border-destructive text-destructive bg-destructive/5",
+                                  s.status === "aguardando" && "border-blue-500 text-blue-600 bg-blue-50",
+                                )}
+                              >
+                                {s.status === "aguardando" ? "Aguardando" : s.status}
+                              </Badge>
+                              <div className="font-bold mt-1">{brl(Number(s.total))}</div>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-end gap-1 -mr-1">
+                            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setDetailSaleId(s.id)} title="Ver detalhes">
+                              <Eye className="size-4" />
+                            </Button>
+                            {s.status === "aberta" && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-green-600"
+                                onClick={async () => {
+                                  if (await confirm({ title: "Finalizar venda?", description: `Confirmar conclusão da venda #${s.number}?` }))
+                                    finalizeOpenMut.mutate(s.id);
+                                }}
+                                disabled={!isCashOpen}
+                              >
+                                <Check className="size-4" />
+                              </Button>
+                            )}
+                            {s.status === "concluida" && !isReturn && <NfceButton saleId={s.id} />}
+                            {s.status === "aberta" && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-destructive"
+                                onClick={async () => {
+                                  if (await confirm({
+                                    title: "Excluir venda aberta permanentemente?",
+                                    description: "Esta ação é IRREVERSÍVEL. A venda será removida do banco de dados e as reservas de estoque serão liberadas.",
+                                    confirmLabel: "Sim, Excluir",
+                                    variant: "destructive",
+                                  })) deleteSaleMut.mutate(s.id);
+                                }}
+                              >
+                                <Trash2 className="size-4" />
+                              </Button>
+                            )}
+                            {s.status === "concluida" && !isReturn && !returnedBy && (activeNoteMap[s.id] !== "processando") && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-amber-600"
+                                title="Cancelar venda concluída"
+                                onClick={() => {
+                                  setCancelDialogSale({
+                                    id: s.id,
+                                    number: s.number,
+                                    total: Number(s.total ?? 0),
+                                    customer_id: s.customer_id ?? null,
+                                    customer_name: s.customer?.name ?? null,
+                                    customer_doc: s.customer?.doc ?? null,
+                                  });
+                                }}
+                              >
+                                <Ban className="size-4" />
+                              </Button>
+                            )}
+
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
 
                 <div className="hidden md:block rounded-md border border-border overflow-hidden">
@@ -2919,11 +5092,61 @@ function SalesPage() {
                       ) : (
                         paginatedSales.map((s: any) => {
                           const c = customers.find((x) => x.id === s.customer_id);
+                          const hasNote = !!activeNoteMap[s.id];
+                          const isReturn = s.type === "devolucao";
+                          const returnedBy = returnsMap[s.id];
+                          const originNumber = isReturn ? originsMap[s.origin_sale_id] : null;
                           return (
-                            <TableRow key={s.id}>
+                            <TableRow key={s.id} className={cn(
+                              "border-l-4! ",
+                              isReturn ? "border-l-orange-500! bg-orange-50/30" :
+                              returnedBy ? "border-l-orange-400!" :
+                              hasNote ? "border-l-green-500!" : "border-l-red-500!",
+                            )}>
                               <TableCell className="text-sm">{dt(s.created_at)}</TableCell>
-                              <TableCell className="font-mono text-xs">#{s.number}</TableCell>
+                              <TableCell className="font-mono text-xs">
+                                <div className="flex items-center gap-1 flex-wrap">
+                                  <span>#{s.number}</span>
+                                  {emailSentMap[s.id] && (
+                                    <TooltipProvider>
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <span><MailCheck className="size-3.5 text-green-600" aria-label="E-mail da nota enviado com sucesso" /></span>
+                                        </TooltipTrigger>
+                                        <TooltipContent className="bg-green-600 text-white">E-mail da nota (XML + PDF) enviado com sucesso</TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
+                                  )}
+                                  {emailFailedMap[s.id] && (
+                                    <TooltipProvider>
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <span><MailX className="size-3.5 text-red-600" aria-label="Falha no envio do e-mail da nota" /></span>
+                                        </TooltipTrigger>
+                                        <TooltipContent className="bg-red-600 text-white">Falha no envio do e-mail da nota (XML + PDF)</TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
+                                  )}
+                                  {isReturn && (
+                                    <Badge variant="outline" className="border-orange-500 text-orange-700 bg-orange-50 text-[9px] px-1 py-0">
+                                      Devolução de #{originNumber ?? "?"}
+                                    </Badge>
+                                  )}
+                                  {returnedBy && (
+                                    <Badge variant="outline" className="border-orange-500 text-orange-700 bg-orange-50 text-[9px] px-1 py-0" title={`Devolvida na venda #${returnedBy.number}`}>
+                                      Devolvida por #{returnedBy.number}
+                                    </Badge>
+                                  )}
+                                  {s.origin === "delivery" && (
+
+                                    <Badge variant="outline" className="border-orange-500 text-orange-600 bg-orange-50 text-[9px] px-1 py-0">
+                                      Delivery
+                                    </Badge>
+                                  )}
+                                </div>
+                              </TableCell>
                               <TableCell>{c?.name ?? "Consumidor final"}</TableCell>
+
                               <TableCell className="text-sm font-medium">
                                 {s.profiles?.name || s.profiles?.email || "—"}
                               </TableCell>
@@ -2958,6 +5181,7 @@ function SalesPage() {
                                     size="icon"
                                     className="h-8 w-8"
                                     onClick={() => setDetailSaleId(s.id)}
+                                    title="Ver detalhes da venda"
                                   >
                                     <Eye className="size-4" />
                                   </Button>
@@ -3003,48 +5227,130 @@ function SalesPage() {
                                       <Trash2 className="size-4" />
                                     </Button>
                                   ) : s.status === "concluida" ? (
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-8 w-8 text-amber-600"
-                                      title="Cancelar venda concluída"
-                                      onClick={() =>
-                                        requestSaleAuthorization({
-                                          title: "Cancelar",
-                                          description:
-                                            "Esta ação altera o status para CANCELADA e devolve os itens ao estoque.",
-                                          onAuthorized: (r) =>
-                                            cancelSaleMut.mutate({ id: s.id, reason: r }),
-                                        })
-                                      }
-                                    >
-                                      <Ban className="size-4" />
-                                    </Button>
+                                    isReturn ? null : (
+                                    <>
+                                      <NfceButton saleId={s.id} />
+                                      {isManager && !returnedBy && (() => {
+                                        const noteStatus = activeNoteMap[s.id];
+                                        if (noteStatus) return null;
+                                        return (
+                                          <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8 text-blue-600"
+                                            title="Editar venda"
+                                            onClick={async () => {
+                                              if (!isCashOpen) {
+                                                toast.error("Abra o caixa para reabrir a venda no carrinho.");
+                                                return;
+                                              }
+                                              if (items.length > 0) {
+                                                const ok = await confirm({
+                                                  title: "Descartar venda em andamento?",
+                                                  description:
+                                                    "Há itens no carrinho atual. Eles serão descartados para reabrir esta venda no carrinho. Deseja continuar?",
+                                                  confirmLabel: "Descartar e reabrir",
+                                                  variant: "destructive",
+                                                });
+                                                if (!ok) return;
+                                                if (currentSaleId) {
+                                                  try { deleteSaleMut.mutate(currentSaleId); } catch {}
+                                                }
+                                              }
+                                               const okReopen = await confirm({
+                                                 title: `Reabrir venda #${s.sale_number ?? ""} para edição?`,
+                                                 description: (
+                                                   <div className="space-y-3 text-sm">
+                                                     <p>
+                                                       Esta venda voltará ao status <strong>ABERTA</strong> e será carregada novamente no carrinho. Ao confirmar, o sistema fará automaticamente:
+                                                     </p>
+                                                     <ul className="list-disc pl-5 space-y-1.5">
+                                                       <li>
+                                                         <strong>Histórico:</strong> a venda sai da lista de vendas concluídas até ser finalizada novamente.
+                                                       </li>
+                                                       <li>
+                                                         <strong>Estoque:</strong> as reservas/baixas dos itens são restabelecidas e serão recalculadas com base nos itens finais.
+                                                       </li>
+                                                       <li>
+                                                         <strong>Financeiro:</strong> os recebíveis, lançamentos de caixa e pagamentos vinculados são removidos e recriados ao finalizar a venda.
+                                                       </li>
+                                                       <li>
+                                                         <strong>Itens, cliente e desconto:</strong> ficam disponíveis no carrinho para alteração livre.
+                                                       </li>
+                                                     </ul>
+                                                     <p className="text-muted-foreground">
+                                                       Nenhuma alteração definitiva ocorre até você finalizar a venda novamente.
+                                                     </p>
+                                                   </div>
+                                                 ),
+                                                 confirmLabel: "Reabrir venda",
+                                                 cancelLabel: "Cancelar",
+                                                 variant: "default",
+                                               });
+                                               if (!okReopen) return;
+                                               reopenToCartMut.mutate(s);
+                                            }}
+                                          >
+                                            <Pencil className="size-4" />
+                                          </Button>
+                                        );
+                                      })()}
+                                      {!returnedBy && (() => {
+                                        const noteStatus = activeNoteMap[s.id];
+                                        if (noteStatus === "processando") return null;
+                                        return (
+                                          <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8 text-amber-600"
+                                            title="Cancelar venda concluída"
+                                            onClick={() => {
+                                              setCancelDialogSale({
+                                                id: s.id,
+                                                number: s.number,
+                                                total: Number(s.total ?? 0),
+                                                customer_id: s.customer_id ?? null,
+                                                customer_name: s.customer?.name ?? null,
+                                                customer_doc: s.customer?.doc ?? null,
+                                              });
+                                            }}
+                                          >
+                                            <Ban className="size-4" />
+                                          </Button>
+                                        );
+                                      })()}
+                                    </>
+                                    )
                                   ) : null}
 
-                                  {isSAdmin && s.status !== "aberta" && (
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-8 w-8 text-destructive hover:bg-destructive/10 opacity-50 hover:opacity-100"
-                                      title="Exclusão administrativa (SAdmin)"
-                                      onClick={async () => {
-                                        if (
-                                          await confirm({
-                                            title: "Excluir venda permanentemente (SAdmin)?",
-                                            description:
-                                              "Esta ação é IRREVERSÍVEL. A venda será removida do banco de dados e o estoque/financeiro serão restaurados. Use apenas para erros graves ou limpeza de testes.",
-                                            confirmLabel: "Sim, Excluir Definitivamente",
-                                            variant: "destructive",
-                                          })
-                                        ) {
-                                          deleteSaleMut.mutate(s.id);
-                                        }
-                                      }}
-                                    >
-                                      <Trash2 className="size-4" />
-                                    </Button>
-                                  )}
+
+                                  {isSAdmin && s.status !== "aberta" && (() => {
+                                    const noteStatus = activeNoteMap[s.id];
+                                    if (noteStatus) return null;
+                                    return (
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8 text-destructive hover:bg-destructive/10 opacity-50 hover:opacity-100"
+                                        title="Exclusão administrativa (SAdmin)"
+                                        onClick={async () => {
+                                          if (
+                                            await confirm({
+                                              title: "Excluir venda permanentemente (SAdmin)?",
+                                              description:
+                                                "Esta ação é IRREVERSÍVEL. A venda será removida do banco de dados e o estoque/financeiro serão restaurados. Use apenas para erros graves ou limpeza de testes.",
+                                              confirmLabel: "Sim, Excluir Definitivamente",
+                                              variant: "destructive",
+                                            })
+                                          ) {
+                                            deleteSaleMut.mutate(s.id);
+                                          }
+                                        }}
+                                      >
+                                        <Trash2 className="size-4" />
+                                      </Button>
+                                    );
+                                  })()}
                                 </div>
                               </TableCell>
                             </TableRow>
@@ -3052,6 +5358,41 @@ function SalesPage() {
                         })
                       )}
                     </TableBody>
+                    {paginatedSales.length > 0 && (() => {
+                      const bruto = paginatedSales
+                        .filter((s: any) => s.status === "concluida" && s.type !== "devolucao")
+                        .reduce((a: number, s: any) => a + Number(s.total ?? 0), 0);
+                      const cancelado = paginatedSales
+                        .filter((s: any) => s.status === "cancelada")
+                        .reduce((a: number, s: any) => a + Number(s.total ?? 0), 0);
+                      const devolvido = paginatedSales
+                        .filter((s: any) => s.type === "devolucao" && s.status === "concluida")
+                        .reduce((a: number, s: any) => a + Number(s.total ?? 0), 0);
+                      const sangrias = isCashOpen && !viewingClosedRegister ? currentCashSummary.withdrawals : 0;
+                      const liquido = bruto - devolvido - sangrias;
+                      return (
+                        <TableFooter>
+                          <TableRow>
+                            <TableCell colSpan={6} className="font-semibold">
+                              Totais ({paginatedSales.length} {paginatedSales.length === 1 ? "venda" : "vendas"})
+                              {(cancelado > 0 || devolvido > 0 || sangrias > 0) && (
+                                <span className="ml-2 text-[11px] font-normal text-muted-foreground">
+                                  Bruto {brl(bruto)}
+                                  {cancelado > 0 && <span className="text-destructive"> • Canc. -{brl(cancelado)}</span>}
+                                  {devolvido > 0 && <span className="text-orange-600"> • Dev. -{brl(devolvido)}</span>}
+                                  {sangrias > 0 && <span> • Sangrias -{brl(sangrias)}</span>}
+                                </span>
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="text-[10px] font-normal text-muted-foreground leading-none">Líquido</div>
+                              <div className="font-bold text-brand-orange">{brl(liquido)}</div>
+                            </TableCell>
+                            <TableCell />
+                          </TableRow>
+                        </TableFooter>
+                      );
+                    })()}
                   </Table>
                 </div>
                 {totalPages > 1 && (
@@ -3119,24 +5460,28 @@ function SalesPage() {
           </Button>
         </div>
 
-        {/* Drawer do Carrinho Mobile */}
-        <Dialog open={showMobileCart} onOpenChange={setShowMobileCart}>
-          <DialogContent className="max-w-full h-[90vh] flex flex-col p-0 gap-0 overflow-hidden sm:max-w-md">
-            <DialogHeader className="p-4 border-b">
+        {/* Drawer do Carrinho Mobile (bottom sheet estilo PDV) */}
+        <Drawer open={showMobileCart} onOpenChange={setShowMobileCart}>
+          <DrawerContent className="max-h-[92vh] flex flex-col p-0 gap-0 overflow-hidden">
+            <DrawerHeader className="p-4 border-b shrink-0">
               <div className="flex items-center justify-between">
-                <DialogTitle className="flex items-center gap-2">
+                <DrawerTitle className="flex items-center gap-2">
                   <ShoppingCart className="size-5 text-brand-red" />
                   Seu Carrinho
-                </DialogTitle>
+                </DrawerTitle>
                 <Button variant="ghost" size="icon" onClick={() => setShowMobileCart(false)}>
                   <X className="size-5" />
                 </Button>
               </div>
-            </DialogHeader>
+            </DrawerHeader>
 
             <div className="flex-1 overflow-y-auto p-4">
               <div className="space-y-3">
-                {items.length === 0 ? (
+                {!isCartHydrated ? (
+                  Array.from({ length: 3 }).map((_, idx) => (
+                    <CartDialogItemSkeleton key={idx} />
+                  ))
+                ) : items.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-3">
                     <ShoppingCart className="size-12 opacity-20" />
                     <p>Carrinho está vazio</p>
@@ -3245,8 +5590,8 @@ function SalesPage() {
                 Continuar Comprando
               </Button>
             </div>
-          </DialogContent>
-        </Dialog>
+          </DrawerContent>
+        </Drawer>
 
         <Dialog
           open={showCloseModal}
@@ -3313,27 +5658,81 @@ function SalesPage() {
                     ))}
                 </div>
               </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-semibold">Vendas da Sessão</h4>
+                  <Badge variant="outline" className="text-[10px] font-normal">
+                    {currentSessionSalesQ.data?.length || 0} venda(s)
+                  </Badge>
+                </div>
+                <div className="max-h-48 overflow-y-auto rounded-md border border-border bg-background">
+                  {(currentSessionSalesQ.data?.length || 0) === 0 ? (
+                    <div className="p-3 text-xs text-center text-muted-foreground">
+                      Nenhuma venda registrada nesta sessão.
+                    </div>
+                  ) : (
+                    <table className="w-full text-xs">
+                      <thead className="bg-muted/40 sticky top-0">
+                        <tr>
+                          <th className="text-left p-2">Hora</th>
+                          <th className="text-left p-2">Venda</th>
+                          <th className="text-left p-2">Pagamento</th>
+                          <th className="text-left p-2">Status</th>
+                          <th className="text-right p-2">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(currentSessionSalesQ.data || []).map((s: any) => (
+                          <tr key={s.id} className={cn("border-t", s.status === "cancelada" && "opacity-70")}>
+                            <td className="p-2 whitespace-nowrap">
+                              {new Date(s.created_at).toLocaleTimeString("pt-BR", {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </td>
+                            <td className="p-2">#{s.number ?? s.id.slice(0, 6)}</td>
+                            <td className="p-2 truncate">{s.payment_method || "—"}</td>
+                            <td className="p-2">
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  "capitalize text-[10px] px-1.5 py-0",
+                                  s.status === "concluida" && "border-green-500 text-green-600 bg-green-50",
+                                  s.status === "cancelada" && "border-destructive text-destructive bg-destructive/5",
+                                )}
+                              >
+                                {s.status}
+                              </Badge>
+                            </td>
+                            <td className={cn("p-2 text-right font-semibold", s.status === "cancelada" && "line-through text-muted-foreground")}>
+                              {brl(s.total)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
               {!hasSpecialAccess && (
-                <div className="space-y-2 pt-2 border-t border-border">
-                  <Label>Sua Senha (para confirmar)</Label>
-                  <Input
-                    type="password"
-                    placeholder="Digite sua senha"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                  />
+                <div className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-950/30 p-3 text-xs text-amber-800 dark:text-amber-200">
+                  Você não tem permissão para fechar o caixa. Ao confirmar, será
+                  solicitada a autenticação de um usuário autorizado.
                 </div>
               )}
             </div>
             <DialogFooter className="p-6 pt-3 flex-col sm:flex-row gap-2 border-t shrink-0">
-              <Button
-                variant="ghost"
-                onClick={handlePrintClosing}
-                className="w-full sm:w-auto sm:mr-auto"
-              >
-                <Receipt className="size-4 mr-2" /> Imprimir Relatório
-              </Button>
-              <div className="flex gap-2 justify-end w-full sm:w-auto">
+              {lastClosingHtml && (
+                <Button
+                  variant="ghost"
+                  onClick={() => void printClosing80mm(lastClosingHtml)}
+                  className="w-full sm:w-auto sm:mr-auto"
+                  title="Reimprimir último fechamento"
+                >
+                  <Receipt className="size-4 mr-2" /> Reimprimir último
+                </Button>
+              )}
+              <div className="flex gap-2 justify-end w-full sm:w-auto sm:ml-auto">
                 <Button variant="outline" onClick={() => setShowCloseModal(false)}>
                   Cancelar
                 </Button>
@@ -3342,12 +5741,26 @@ function SalesPage() {
                   onClick={handleCloseRegister}
                   disabled={isVerifying}
                 >
-                  {isVerifying ? "Processando..." : "Fechar Caixa Agora"}
+                  <Receipt className="size-4 mr-2" />
+                  {isVerifying ? "Processando..." : "Fechar e Imprimir"}
                 </Button>
               </div>
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        <AdminAuthDialog
+          isOpen={closingAuthOpen}
+          onClose={() => setClosingAuthOpen(false)}
+          onSuccess={() => {
+            setClosingAuthOpen(false);
+            void performCloseAndPrint();
+          }}
+          title="Autorizar Fechamento de Caixa"
+          description="Informe as credenciais de um usuário com permissão para fechar o caixa."
+          module="fechamento-caixa"
+          action="edit"
+          requireReason={false}
+        />
         <AdminAuthDialog
           isOpen={authDialog.isOpen}
           onClose={() => setAuthDialog((prev) => ({ ...prev, isOpen: false }))}
@@ -3363,10 +5776,13 @@ function SalesPage() {
           sale={editingSale}
           isOpen={!!editingSale}
           onClose={() => setEditingSale(null)}
-          onSave={(items, discount, reason) => {
-            updateSaleMut.mutate({ saleId: editingSale.id, items, discount, reason });
+          onSave={(payload) => {
+            editSaleFullMut.mutate({ saleId: editingSale.id, payload });
           }}
           products={products}
+          partners={(customers as any[]) || []}
+          paymentMethods={(paymentMethods as any[]) || []}
+          isSaving={editSaleFullMut.isPending}
         />
         <PrintPreviewDialog
           open={showSalePreview}
@@ -3380,10 +5796,46 @@ function SalesPage() {
         />
         <PrintPreviewDialog
           open={showClosingPreview}
-          onOpenChange={setShowClosingPreview}
+          onOpenChange={(o) => {
+            setShowClosingPreview(o);
+            if (!o) {
+              setPendingClosingHtml(null);
+              setPendingClosingCtx(null);
+            }
+          }}
           title={previewTitle}
           content={previewContent}
+          onConfirm={
+            pendingClosingHtml
+              ? async () => {
+                  const html = pendingClosingHtml;
+                  setShowClosingPreview(false);
+                  setPendingClosingHtml(null);
+                  setPendingClosingCtx(null);
+                  await printClosing80mm(html);
+                }
+              : undefined
+          }
+          extras={
+            pendingClosingCtx ? (
+              <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                <Checkbox
+                  checked={includeSalesClosing}
+                  onCheckedChange={(v) => setIncludeSalesClosing(v === true)}
+                />
+                <span>Incluir lista detalhada de vendas no cupom</span>
+              </label>
+            ) : null
+          }
         />
+
+        <SaleProgressDialog
+          open={progressOpen}
+          steps={progressSteps}
+          onClose={() => setProgressOpen(false)}
+        />
+
+
         <SaleDetailDialog
           saleId={detailSaleId}
           onClose={() => setDetailSaleId(null)}
@@ -3392,6 +5844,35 @@ function SalesPage() {
           onDelete={(id) => deleteSaleMut.mutate(id)}
           isDeleting={deleteSaleMut.isPending}
           isCashOpen={isCashOpen}
+          onRetryNfce={(id) => doEmitNfce(id)}
+        />
+
+        <CancelSaleDialog
+          open={!!cancelDialogSale}
+          onOpenChange={(o) => !o && setCancelDialogSale(null)}
+          sale={cancelDialogSale}
+          onSuccess={() => {
+            if (cancelDialogSale?.id === currentSaleId) {
+              setItems([]);
+              setCurrentSaleId(null);
+              setReopenedFromNumber(null);
+              localStorage.removeItem(`${SAVED_SALE_KEY}_items`);
+              localStorage.removeItem(`${SAVED_SALE_KEY}_saleId`);
+              localStorage.removeItem(`${SAVED_SALE_KEY}_reopenedNumber`);
+              stockReservation.releaseAll();
+            }
+            setCancelDialogSale(null);
+            qc.invalidateQueries({ queryKey: ["sales", cid] });
+            qc.invalidateQueries({ queryKey: ["sales-paginated", cid] });
+            qc.invalidateQueries({ queryKey: ["cash-transactions", currentRegister?.id] });
+            qc.invalidateQueries({ queryKey: ["current-session-sales", cid, currentRegister?.id] });
+            qc.invalidateQueries({ queryKey: ["current-session-cash-sales", cid, currentRegister?.id] });
+            qc.invalidateQueries({ queryKey: ["current-session-open-sales", cid, currentRegister?.id] });
+            qc.invalidateQueries({ queryKey: ["current-cash-register", cid, user?.id] });
+            qc.invalidateQueries({ queryKey: ["products", cid] });
+            qc.invalidateQueries({ queryKey: ["partners", cid] });
+            qc.invalidateQueries({ queryKey: ["customer-credit-balance"] });
+          }}
         />
 
         <Dialog
@@ -3496,6 +5977,7 @@ function SaleDetailDialog({
   onDelete,
   isDeleting,
   isCashOpen,
+  onRetryNfce,
 }: {
   saleId: string | null;
   onClose: () => void;
@@ -3504,14 +5986,16 @@ function SaleDetailDialog({
   onDelete?: (id: string) => void;
   isDeleting?: boolean;
   isCashOpen?: boolean;
+  onRetryNfce?: (saleId: string) => void | Promise<void>;
 }) {
+
   const confirm = useConfirm();
   const open = !!saleId;
   const detailQ = useQuery({
     queryKey: ["sale-detail", saleId],
     enabled: !!saleId,
     queryFn: async () => {
-      const sb = appwrite as any;
+      const sb = supabase as any;
       const { data: sale, error: sErr } = await sb
         .from("sales")
         .select("*")
@@ -3556,17 +6040,64 @@ function SaleDetailDialog({
         cancellationLog = logs;
       }
 
-      return { sale, items: items ?? [], creator, customer, cancellationLog };
+      const { data: noteRows } = await sb
+        .from("fiscal_notes")
+        .select("id, status, motivo_rejeicao, created_at")
+        .eq("sale_id", saleId!)
+        .in("type", ["NFC-e", "nfce", "NF-e", "nfe"] as any)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      let latestNote: any = noteRows?.[0] ?? null;
+      if (!latestNote || (latestNote.status !== "autorizada" && latestNote.status !== "processando" && latestNote.status !== "cancelada")) {
+        const { data: authAttempt } = await sb
+          .from("fiscal_note_attempts" as never)
+          .select("id, status, created_at")
+          .eq("sale_id", saleId!)
+          .eq("status", "autorizada")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (authAttempt) latestNote = { ...(authAttempt as any), motivo_rejeicao: null };
+      }
+
+      return { sale, items: items ?? [], creator, customer, cancellationLog, latestNote };
     },
   });
   const data = detailQ.data;
   const isCancelled = data?.sale?.status === "cancelada";
+  const isReturn = data?.sale?.type === "devolucao";
+  const returnQ = useQuery({
+    queryKey: ["sale-detail-return", saleId],
+    enabled: !!saleId && !isReturn,
+    queryFn: async () => {
+      const { data: r } = await supabase
+        .from("sales")
+        .select("id, number")
+        .eq("origin_sale_id", saleId!)
+        .eq("type", "devolucao")
+        .eq("status", "concluida")
+        .limit(1)
+        .maybeSingle();
+      return r as { id: string; number: number } | null;
+    },
+  });
+  const returnedBy = returnQ.data;
+  const isReadOnly = isCancelled || isReturn || !!returnedBy;
+  const latestNote = data?.latestNote;
+  const canRetryNfce =
+    !!onRetryNfce &&
+    !isReadOnly &&
+    !!data?.sale &&
+    (!latestNote || latestNote.status === "rejeitada" || latestNote.status === "erro");
+
+
+
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="w-[95vw] max-w-2xl max-h-[90vh] overflow-x-hidden overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+          <DialogTitle className="flex flex-wrap items-center gap-2 pr-8">
             <Receipt className="size-5 text-brand-orange" />
             Detalhes da venda {data?.sale ? `#${data.sale.number}` : ""}
             {isCancelled && (
@@ -3574,6 +6105,17 @@ function SaleDetailDialog({
                 Cancelada
               </Badge>
             )}
+            {isReturn && (
+              <Badge variant="outline" className="ml-2 uppercase border-orange-500 text-orange-700 bg-orange-50">
+                Devolução
+              </Badge>
+            )}
+            {returnedBy && (
+              <Badge variant="outline" className="ml-2 uppercase border-orange-500 text-orange-700 bg-orange-50">
+                Devolvida por #{returnedBy.number}
+              </Badge>
+            )}
+
             {data?.sale?.status === "aguardando" && (
               <Badge variant="outline" className="ml-2 uppercase border-blue-500 text-blue-600">
                 Provisória
@@ -3669,7 +6211,7 @@ function SaleDetailDialog({
 
             <div className="space-y-2">
               <h4 className="text-sm font-semibold">Produtos ({data.items.length})</h4>
-              <div className="rounded-md border border-border overflow-hidden">
+              <div className="rounded-md border border-border overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -3758,10 +6300,17 @@ function SaleDetailDialog({
                 </div>
               </div>
             )}
+
+            <div className="border-t pt-3">
+              <h4 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                <CalendarClock className="size-4 text-orange-500" /> Histórico de alterações
+              </h4>
+              <SaleEditTimeline saleId={saleId} />
+            </div>
           </div>
         )}
-        <DialogFooter>
-          {data && isSAdmin && (
+        <DialogFooter className="flex-col sm:flex-row sm:flex-wrap gap-2 sm:justify-end [&>button]:w-full sm:[&>button]:w-auto">
+          {data && isSAdmin && !isReturn && !returnedBy && (
             <Button
               variant="outline"
               onClick={async () => {
@@ -3785,7 +6334,7 @@ function SaleDetailDialog({
               {isDeleting ? "Excluindo..." : "Excluir Definitivamente"}
             </Button>
           )}
-          {data && onReprint && !isCancelled && (
+          {data && onReprint && !isReadOnly && (
             <Button
               variant="outline"
               onClick={() =>
@@ -3804,14 +6353,32 @@ function SaleDetailDialog({
                 })
               }
               className="border-brand-orange/30 text-brand-orange hover:bg-brand-orange/5"
-              disabled={!isCashOpen}
+              disabled={!isCashOpen || isCancelled || isReturn}
+              title={isCancelled || isReturn ? "Não é possível imprimir cupom de venda cancelada ou devolvida" : "Reimprimir cupom de venda"}
             >
               <Receipt className="size-4 mr-2" /> Reimprimir cupom
+            </Button>
+          )}
+          {canRetryNfce && data && (
+            <Button
+              variant="outline"
+              onClick={async () => {
+                await onRetryNfce!(data.sale.id);
+                onClose();
+              }}
+              className="border-brand-red/30 text-brand-red hover:bg-brand-red/5"
+              title={latestNote?.motivo_rejeicao || "Tentar emitir NFC-e novamente"}
+            >
+              <RefreshCw className="size-4 mr-2" />{" "}
+              {latestNote && (latestNote.status === "rejeitada" || latestNote.status === "erro")
+                ? "Tentar emitir novamente"
+                : "Emitir NFC-e"}
             </Button>
           )}
           <Button variant="outline" onClick={onClose}>
             Fechar
           </Button>
+
         </DialogFooter>
       </DialogContent>
     </Dialog>

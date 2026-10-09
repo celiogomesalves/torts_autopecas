@@ -15,11 +15,42 @@ export const parseCurrencyInput = (raw: string): number => {
 // Formata enquanto o usuário digita: aceita qualquer entrada e devolve "0.000,00".
 export const formatCurrencyInput = (raw: string): string => brlNumber(parseCurrencyInput(raw));
 
-export const dt = (iso: string) =>
+// Fuso horário oficial da aplicação: tudo é exibido em horário de Brasília,
+// independentemente do fuso do navegador/servidor. O banco continua em UTC (timestamptz).
+export const APP_TIMEZONE = "America/Sao_Paulo";
+
+export const dt = (iso: string | Date) =>
   new Date(iso).toLocaleString("pt-BR", {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+    timeZone: APP_TIMEZONE,
+  });
+
+export const dtDate = (iso: string | Date) =>
+  new Date(iso).toLocaleDateString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: APP_TIMEZONE,
+  });
+
+export const dtTime = (iso: string | Date) =>
+  new Date(iso).toLocaleTimeString("pt-BR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: APP_TIMEZONE,
+  });
+
+export const dtFull = (iso: string | Date) =>
+  new Date(iso).toLocaleString("pt-BR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: APP_TIMEZONE,
   });

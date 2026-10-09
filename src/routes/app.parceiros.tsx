@@ -1,3 +1,4 @@
+import { makePrefetchLoader } from "@/lib/route-prefetch";
 import { PageHeading } from "@/components/page-header";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
@@ -55,6 +56,7 @@ import { PrintButton } from "@/components/print-button";
 import { printList } from "@/lib/print-list";
 
 export const Route = createFileRoute("/app/parceiros")({
+  loader: makePrefetchLoader(["partnersAll"]),
   component: PartnersPage,
 });
 

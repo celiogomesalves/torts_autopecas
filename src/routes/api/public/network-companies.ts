@@ -1,6 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { serverDatabases, APPWRITE_DATABASE_ID } from "@/integrations/appwrite/client.server";
-import { Query } from "node-appwrite";
+import { createClient } from "@supabase/supabase-js";
+import type { Database } from "@/integrations/supabase/types";
+
+// Usamos anon key para listar empresas públicas via RPC.
+// O RPC list_companies_by_ip deve ser acessível anonimamente ou via role anon.
+const SUPABASE_URL = "https://oapfhdcvugcileuxumpb.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9hcGZoZGN2dWdjaWxldXh1bXBiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3OTkxNDQsImV4cCI6MjA5MjM3NTE0NH0.I5EbNf4Rkr2XqKTjUUd720sP5V59wr1Xsgr8FMZy5WQ";
 
 function getClientIp(request: Request): string | null {
   const xff = request.headers.get("x-forwarded-for");
@@ -17,34 +23,16 @@ export const Route = createFileRoute("/api/public/network-companies")({
           return Response.json({ companies: [], ip: null });
         }
 
-        try {
-          const list = await serverDatabases.listDocuments(
-            APPWRITE_DATABASE_ID,
-            "company_network_access",
-            [Query.equal("ip", ip)],
-          );
-          const companyIds = list.documents.map((d: any) => d.company_id);
-          if (companyIds.length === 0) {
-            return Response.json({ companies: [], ip });
-          }
+        const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
-          const companies = await serverDatabases.listDocuments(
-            APPWRITE_DATABASE_ID,
-            "companies",
-            [Query.equal("$id", companyIds)],
-          );
+        const { data, error } = await supabase.rpc("list_companies_by_ip", { _ip: ip });
 
-          return Response.json({
-            companies: companies.documents.map((c: any) => ({
-              id: c.$id,
-              name: c.name,
-            })),
-            ip,
-          });
-        } catch (error: any) {
-          console.error("network-companies error:", error);
+        if (error) {
+          console.error("list_companies_by_ip error:", error);
           return Response.json({ companies: [], ip, error: error.message });
         }
+
+        return Response.json({ companies: data ?? [], ip });
       },
     },
   },

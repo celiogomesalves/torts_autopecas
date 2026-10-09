@@ -1,3 +1,4 @@
+import { makePrefetchLoader } from "@/lib/route-prefetch";
 import { PageHeading } from "@/components/page-header";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useMemo } from "react";
@@ -51,6 +52,7 @@ import { cn, matchSearch } from "@/lib/utils";
 import { SearchInput } from "@/components/search-input";
 
 export const Route = createFileRoute("/app/equipe")({
+  loader: makePrefetchLoader(["team"]),
   component: TeamPage,
 });
 
@@ -86,8 +88,8 @@ function TeamPage() {
     queryKey: ["invite-code", cid],
     enabled: !!cid,
     queryFn: async () => {
-      const { appwrite: appwrite } = await import("@/integrations/appwrite/client");
-      const { data } = await appwrite.rpc("get_company_invite_code" as any, { _company: cid });
+      const { supabase } = await import("@/integrations/supabase/client");
+      const { data } = await supabase.rpc("get_company_invite_code" as any, { _company: cid });
       return (data as string | null) ?? null;
     },
   });

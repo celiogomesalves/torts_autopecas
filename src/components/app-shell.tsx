@@ -1,12 +1,13 @@
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAuth, type AppUser } from "@/lib/auth-context";
-import { appwrite } from "@/integrations/appwrite/client";
-import { useEffect } from "react";
+import { useAuth } from "@/lib/auth-context";
+import { supabase } from "@/integrations/supabase/client";
+import type { User as SupabaseUser } from "@supabase/supabase-js";
+import { useEffect, useState, type ReactNode } from "react";
 import { initScrollReveal } from "@/lib/scroll-reveal";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
-import { Bell } from "lucide-react";
+import { Bell, Calendar as CalendarIcon } from "lucide-react";
 import { fetchMyCompanies, isSuperAdmin, hasPermission, hasRole, isAdmin } from "@/lib/db";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,6 +45,7 @@ import {
   Shield,
   RefreshCw,
   User,
+  Calendar,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -55,10 +57,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
-import { useState, type ReactNode } from "react";
+
 import { useConfirm } from "@/components/confirm-dialog";
 import { useBranding } from "@/hooks/use-branding";
 import { cn } from "@/lib/utils";
+import { OverdueTasksDialog, useOverdueTasks } from "@/components/overdue-tasks-dialog";
+
 
 type NavLeaf = {
   to: string;
@@ -78,12 +82,13 @@ type NavGroup = {
 type NavEntry = NavLeaf | NavGroup;
 
 const navItems: ReadonlyArray<NavEntry> = [
-  { to: "/app", label: "Dashboard", icon: LayoutDashboard, exact: true },
+  { to: "/app", label: "Página Inicial", icon: LayoutDashboard, exact: true },
   {
     label: "Vendas (PDV)",
     icon: ShoppingCart,
     children: [
       { to: "/app/vendas", label: "Realizar Vendas", icon: ShoppingCart },
+      { to: "/app/orcamentos", label: "Gerar Orçamentos", icon: FileText },
       { to: "/app/fechamento-caixa", label: "Gestão de Caixa", icon: Calculator },
     ],
   },
@@ -97,6 +102,7 @@ const navItems: ReadonlyArray<NavEntry> = [
       { to: "/app/fluxo-caixa", label: "Fluxo de caixa", icon: TrendingUp },
       { to: "/app/conciliacao", label: "Conciliação", icon: Banknote },
       { to: "/app/notas-fiscais", label: "Notas Fiscais", icon: FileText },
+      { to: "/app/auditoria-fiscal", label: "Auditoria fiscal", icon: FileText },
     ],
   },
   { to: "/app/delivery", label: "Delivery", icon: Truck },
@@ -116,7 +122,9 @@ const navItems: ReadonlyArray<NavEntry> = [
   { to: "/app/relatorios", label: "Relatórios", icon: BarChart3 },
 
   { to: "/app/equipe", label: "Equipe", icon: Users },
+  { to: "/app/agenda", label: "Agenda", icon: Calendar },
   { to: "/app/configuracoes", label: "Configurações", icon: Settings, adminOnly: true },
+
   { to: "/super-admin", label: "Painel Master", icon: Shield, superAdminOnly: true },
 ];
 
@@ -145,8 +153,9 @@ interface SidebarContentProps {
   visibleNav: NavEntry[];
   isActive: (to: string, exact?: boolean) => boolean;
   setIsMobileOpen: (open: boolean) => void;
-  user: AppUser | null;
+  user: SupabaseUser | null;
   pendingCount: number;
+  pendingTasksCount: number;
   confirm: any;
   onLogout: () => void;
 }
@@ -158,6 +167,7 @@ const SidebarContent = ({
   setIsMobileOpen,
   user,
   pendingCount,
+  pendingTasksCount,
   confirm,
   onLogout,
 }: SidebarContentProps) => (
@@ -203,6 +213,14 @@ const SidebarContent = ({
                     {pendingCount}
                   </Badge>
                 )}
+                {item.to === "/app/agenda" && pendingTasksCount > 0 && (
+                  <Badge
+                    variant="destructive"
+                    className="ml-auto px-1.5 h-4 min-w-4 flex items-center justify-center text-[10px] bg-brand-orange hover:bg-brand-orange"
+                  >
+                    {pendingTasksCount}
+                  </Badge>
+                )}
               </div>
             ) : (
               <div className="relative group-hover:static">
@@ -211,9 +229,15 @@ const SidebarContent = ({
                     {pendingCount}
                   </div>
                 )}
+                {item.to === "/app/agenda" && pendingTasksCount > 0 && (
+                  <div className="absolute -top-1.5 -right-1.5 size-4 bg-brand-orange text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-sidebar">
+                    {pendingTasksCount}
+                  </div>
+                )}
                 <div className="fixed left-16 bg-popover text-popover-foreground px-2 py-1 rounded text-xs opacity-0 group-hover:opacity-100 pointer-events-none border shadow-md z-50 transition-opacity whitespace-nowrap">
                   {item.label}
                   {item.to === "/app/delivery" && pendingCount > 0 && ` (${pendingCount})`}
+                  {item.to === "/app/agenda" && pendingTasksCount > 0 && ` (${pendingTasksCount})`}
                 </div>
               </div>
             )}
@@ -288,13 +312,22 @@ export function AppShell({ children }: { children: ReactNode }) {
     staleTime: 5 * 60 * 1000,
   });
 
+  const inviteCodeQ = useQuery({
+    queryKey: ["invite-code", currentCompanyId],
+    enabled: !!currentCompanyId && !!canSeeInviteQ.data,
+    queryFn: async () => {
+      const { data } = await supabase.rpc("get_company_invite_code" as any, { _company: currentCompanyId });
+      return (data as string | null) ?? null;
+    },
+  });
+
   const companies = companiesQ.data ?? [];
   const company = companies.find((c) => c.id === currentCompanyId);
 
   const deliveryOrdersQ = useQuery({
     queryKey: ["delivery-orders-count", currentCompanyId],
     queryFn: async () => {
-      const { count, error } = await appwrite
+      const { count, error } = await supabase
         .from("delivery_orders")
         .select("*", { count: "exact", head: true })
         .eq("company_id", currentCompanyId!)
@@ -306,78 +339,210 @@ export function AppShell({ children }: { children: ReactNode }) {
   });
 
   const pendingCount = deliveryOrdersQ.data || 0;
+  
+  const pendingTasksQ = useQuery({
+    queryKey: ["pending-tasks-count", currentCompanyId, user?.id],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from("user_tasks" as any)
+        .select("*", { count: "exact", head: true })
+        .eq("company_id", currentCompanyId!)
+        .eq("user_id", user!.id)
+        .eq("status", "pending");
+      if (error) throw error;
+      return count || 0;
+    },
+    enabled: !!currentCompanyId && !!user,
+  });
 
-  // Fallback: revalida o contador a cada 15s caso o realtime esteja indisponível
+  const pendingTasksCount = pendingTasksQ.data || 0;
+
+  // Lembrete diário de tarefas atrasadas (uma vez por dia por usuário)
+  const [overdueDialogOpen, setOverdueDialogOpen] = useState(false);
+  const overdueTasksQ = useOverdueTasks(currentCompanyId, user?.id);
+
+  useEffect(() => {
+    if (!currentCompanyId || !user?.id) return;
+    const overdue = overdueTasksQ.data;
+    if (!overdue || overdue.length === 0) return;
+    const key = `overdue-tasks-reminded-${user.id}-${new Date().toISOString().slice(0, 10)}`;
+    try {
+      if (localStorage.getItem(key)) return;
+      localStorage.setItem(key, "1");
+    } catch {
+      /* ignore */
+    }
+    setOverdueDialogOpen(true);
+  }, [currentCompanyId, user?.id, overdueTasksQ.data]);
+
+
+
+  // Fallback: revalida os contadores a cada 15s caso o realtime esteja indisponível
   useEffect(() => {
     if (!currentCompanyId) return;
     const id = setInterval(() => {
       queryClient.invalidateQueries({ queryKey: ["delivery-orders-count", currentCompanyId] });
+      queryClient.invalidateQueries({ queryKey: ["pending-tasks-count", currentCompanyId, user?.id] });
     }, 15000);
     return () => clearInterval(id);
-  }, [currentCompanyId, queryClient]);
+  }, [currentCompanyId, user?.id, queryClient]);
 
   useEffect(() => {
     if (!currentCompanyId) return;
 
-    let channel: any = null;
-    try {
-      if (typeof appwrite.channel === "function") {
-        channel = appwrite
-          .channel(`delivery-orders-changes-${currentCompanyId}`)
-          ?.on?.(
-            "postgres_changes",
-            {
-              event: "*",
-              schema: "public",
-              table: "delivery_orders",
-              filter: `company_id=eq.${currentCompanyId}`,
-            },
-            (payload: any) => {
-              // Sempre revalida o contador
-              queryClient.invalidateQueries({ queryKey: ["delivery-orders-count", currentCompanyId] });
+    const channel = supabase
+      .channel(`delivery-orders-changes-${currentCompanyId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "delivery_orders",
+          filter: `company_id=eq.${currentCompanyId}`,
+        },
+        (payload) => {
+          // Sempre revalida o contador
+          queryClient.invalidateQueries({ queryKey: ["delivery-orders-count", currentCompanyId] });
 
-              const newRow = payload?.new as any;
-              const oldRow = payload?.old as any;
-              const isAwaiting = newRow && newRow.status === "aguardando_confirmacao";
-              const wasAwaiting = oldRow && oldRow.status === "aguardando_confirmacao";
+          const newRow = payload.new as any;
+          const oldRow = payload.old as any;
+          const isAwaiting = newRow && newRow.status === "aguardando_confirmacao";
+          const wasAwaiting = oldRow && oldRow.status === "aguardando_confirmacao";
 
-              // Dispara toast em INSERT aguardando OU UPDATE que entrou em aguardando
-              if (isAwaiting && !wasAwaiting) {
-                toast.info("Novo pedido Delivery!", {
-                  description: `Pedido de ${newRow.customer_name || "Cliente"} aguardando confirmação.`,
-                  duration: 10000,
-                  icon: <Bell className="size-4" />,
-                  action: {
-                    label: "Ver pedidos",
-                    onClick: () => navigate({ to: "/app/delivery" }),
-                  },
-                });
-              }
-            },
-          )
-          ?.subscribe?.();
-      }
-    } catch {
-      // Ignora erro em realtime fallback
-    }
+          // Dispara toast em INSERT aguardando OU UPDATE que entrou em aguardando
+          if (isAwaiting && !wasAwaiting) {
+            toast.info("Novo pedido Delivery!", {
+              description: `Pedido de ${newRow.customer_name || "Cliente"} aguardando confirmação.`,
+              duration: 10000,
+              icon: <Bell className="size-4" />,
+              action: {
+                label: "Ver pedidos",
+                onClick: () => navigate({ to: "/app/delivery" }),
+              },
+            });
+          }
+        },
+      )
+      .subscribe();
 
     return () => {
-      try {
-        if (channel && typeof appwrite.removeChannel === "function") {
-          appwrite.removeChannel(channel);
-        }
-      } catch {
-        // Ignora
-      }
+      supabase.removeChannel(channel);
     };
   }, [currentCompanyId, queryClient, navigate]);
+
+  // Monitoramento de Lembretes de Tarefas e Realtime para o Badge
+  useEffect(() => {
+    if (!currentCompanyId || !user?.id) return;
+
+    // Realtime subscription para atualizar o badge de tarefas pendentes
+    const taskChannel = supabase
+      .channel(`user-tasks-changes-${currentCompanyId}-${user.id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "user_tasks",
+          filter: `user_id=eq.${user.id}`,
+        },
+        () => {
+          queryClient.invalidateQueries({ queryKey: ["pending-tasks-count", currentCompanyId, user.id] });
+          queryClient.invalidateQueries({ queryKey: ["user-tasks", currentCompanyId, user.id] });
+        }
+      )
+      .subscribe();
+
+    const checkReminders = async () => {
+      try {
+        const now = new Date();
+        const nowIso = now.toISOString();
+
+        const { data: tasks } = await (supabase
+          .from("user_tasks" as any)
+          .select("*")
+          .eq("company_id", currentCompanyId)
+          .eq("user_id", user.id)
+          .eq("status", "pending")
+          .lte("reminder_at", nowIso)
+          .gt("due_at", nowIso) as any);
+
+        if (tasks && tasks.length > 0) {
+          // Prioriza configurações de som do usuário, com fallback para a empresa
+          const { data: userSettings } = await supabase
+            .from("user_settings" as any)
+            .select("agenda_alert_sound_enabled, agenda_alert_sound_type")
+            .eq("user_id", user.id)
+            .eq("company_id", currentCompanyId)
+            .maybeSingle();
+
+          let soundEnabled = true;
+          let soundType = "bell";
+
+          if (userSettings) {
+            soundEnabled = (userSettings as any).agenda_alert_sound_enabled ?? true;
+            soundType = (userSettings as any).agenda_alert_sound_type ?? "bell";
+          } else {
+            const { data: companySettings } = await supabase
+              .from("company_settings")
+              .select("agenda_alert_sound_enabled, agenda_alert_sound_type")
+              .eq("company_id", currentCompanyId)
+              .maybeSingle();
+            
+            soundEnabled = (companySettings as any)?.agenda_alert_sound_enabled ?? true;
+            soundType = (companySettings as any)?.agenda_alert_sound_type ?? "bell";
+          }
+
+          // Emite som de notificação se habilitado
+          if (soundEnabled) {
+            try {
+              const soundUrls: Record<string, string> = {
+                bell: "https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3",
+                chime: "https://assets.mixkit.co/active_storage/sfx/2019/2019-preview.mp3",
+                digital: "https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3",
+                notification: "https://assets.mixkit.co/active_storage/sfx/2357/2357-preview.mp3",
+              };
+              const audio = new Audio(soundUrls[soundType] || soundUrls.bell);
+              audio.volume = 0.5;
+              void audio.play();
+            } catch (e) {
+              console.warn("Falha ao reproduzir som de notificação:", e);
+            }
+          }
+
+          tasks.forEach((task: any) => {
+            const toastKey = `reminder-${task.id}-${new Date().getMinutes()}`;
+            toast.info("Lembrete de Compromisso", {
+              id: toastKey,
+              description: `${task.title} às ${new Date(task.due_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`,
+              icon: <CalendarIcon className="size-4 text-brand-orange" />,
+              action: {
+                label: "Ver Agenda",
+                onClick: () => navigate({ to: "/app/agenda" }),
+              },
+            });
+          });
+        }
+      } catch (e) {
+        console.warn("Reminder check failed", e);
+      }
+    };
+
+    const interval = setInterval(checkReminders, 60_000);
+    checkReminders();
+
+    return () => {
+      clearInterval(interval);
+      supabase.removeChannel(taskChannel);
+    };
+  }, [currentCompanyId, user?.id, navigate, queryClient]);
+
 
   // Papel do usuário na empresa atual (para esconder itens admin-only)
   const myMembershipQ = useQuery({
     queryKey: ["my-membership", user?.id, currentCompanyId],
     enabled: !!user && !!currentCompanyId,
     queryFn: async () => {
-      const { data } = await appwrite
+      const { data } = await supabase
         .from("memberships")
         .select("role")
         .eq("user_id", user!.id)
@@ -398,7 +563,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const systemSettingsQ = useQuery({
     queryKey: ["systemSettings"],
     queryFn: async () => {
-      const { data } = await appwrite
+      const { data } = await supabase
         .from("system_settings" as any)
         .select("*")
         .maybeSingle();
@@ -418,9 +583,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   };
 
   const labelToModule: Record<string, string> = {
-    Dashboard: "dashboard",
+    "Página Inicial": "dashboard",
     "Vendas (PDV)": "vendas",
     "Realizar Vendas": "vendas",
+    "Gerar Orçamentos": "vendas",
     "Gestão de Caixa": "fechamento-caixa",
     Estoque: "estoque",
     Financeiro: "financeiro",
@@ -439,12 +605,13 @@ export function AppShell({ children }: { children: ReactNode }) {
     "Clientes & Forn.": "parceiros",
     "Formas de Pagamento": "formas-pagamento",
     Configurações: "configuracoes",
+    Agenda: "agenda",
   };
 
   const myPermissionsQ = useQuery({
     queryKey: ["my-permissions-list", currentCompanyId, user?.id],
     queryFn: async () => {
-      const { data: member } = await appwrite
+      const { data: member } = await supabase
         .from("memberships")
         .select("role, custom_role_id")
         .eq("user_id", user!.id)
@@ -455,7 +622,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       if (member.role === "admin") return "all";
       if (!member.custom_role_id) return [];
 
-      const { data } = await appwrite
+      const { data } = await supabase
         .from("role_permissions")
         .select("module, can_view")
         .eq("role_id", member.custom_role_id);
@@ -513,7 +680,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [pathname]);
 
   const onLogout = async () => {
-    await appwrite.auth.signOut();
+    await supabase.auth.signOut();
     navigate({ to: "/login" });
   };
 
@@ -524,6 +691,14 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="h-[100dvh] flex bg-background text-foreground overflow-hidden">
       {/* Noise overlay for subtle depth texture */}
       <div className="noise-overlay" />
+      <OverdueTasksDialog
+        open={overdueDialogOpen}
+        onOpenChange={setOverdueDialogOpen}
+        companyId={currentCompanyId}
+        userId={user?.id}
+        continueLabel="Fechar"
+      />
+
       {/* Desktop Sidebar */}
       <aside
         className={`hidden md:flex shrink-0 border-r border-sidebar-border flex-col transition-all duration-300 ease-in-out ${
@@ -536,7 +711,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           isActive={isActive}
           setIsMobileOpen={setIsMobileOpen}
           user={user}
-          pendingCount={pendingCount}
+        pendingCount={pendingCount}
+        pendingTasksCount={pendingTasksCount}
           confirm={confirm}
           onLogout={onLogout}
         />
@@ -552,6 +728,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             setIsMobileOpen={setIsMobileOpen}
             user={user}
             pendingCount={pendingCount}
+            pendingTasksCount={pendingTasksCount}
             confirm={confirm}
             onLogout={onLogout}
           />
@@ -623,7 +800,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <div className="hidden sm:flex items-center gap-2 text-[10px] uppercase tracking-wider text-muted-foreground bg-muted/50 px-2 py-1 rounded">
                 <span>Convite:</span>
                 <span className="font-mono text-brand-orange font-bold select-all">
-                  {company?.invite_code}
+                  {inviteCodeQ.data ?? "—"}
                 </span>
               </div>
             )}
@@ -682,6 +859,14 @@ export function AppShell({ children }: { children: ReactNode }) {
                       className="absolute -top-2 -right-3 px-1.5 h-4 min-w-4 flex items-center justify-center text-[10px] border-2 border-card"
                     >
                       {pendingCount}
+                    </Badge>
+                  )}
+                  {item.to === "/app/agenda" && pendingTasksCount > 0 && (
+                    <Badge
+                      variant="destructive"
+                      className="absolute -top-2 -right-3 px-1.5 h-4 min-w-4 flex items-center justify-center text-[10px] border-2 border-card bg-brand-orange hover:bg-brand-orange"
+                    >
+                      {pendingTasksCount}
                     </Badge>
                   )}
                 </div>

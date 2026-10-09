@@ -1,3 +1,4 @@
+import { makePrefetchLoader } from "@/lib/route-prefetch";
 import { PageHeading } from "@/components/page-header";
 import { Loader2, ShieldAlert } from "lucide-react";
 import { hasPermission, isSuperAdmin } from "@/lib/db";
@@ -70,6 +71,7 @@ export const Route = createFileRoute("/app/financeiro")({
     // mas como o context do router pode não ter o hasPermission fácil,
     // vamos garantir que o componente lide com isso ou use um loader.
   },
+  loader: makePrefetchLoader(["paymentMethods", "partnersAll"]),
   component: FinancePage,
 });
 

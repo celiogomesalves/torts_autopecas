@@ -1,10 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { serverDatabases, APPWRITE_DATABASE_ID } from "@/integrations/appwrite/client.server";
-import { Query } from "node-appwrite";
+import { createClient } from "@supabase/supabase-js";
+import type { Database } from "@/integrations/supabase/types";
 import { z } from "zod";
 
-const QuerySchema = z.object({
-  company_id: z.string(),
+const SUPABASE_URL = "https://oapfhdcvugcileuxumpb.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9hcGZoZGN2dWdjaWxldXh1bXBiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3OTkxNDQsImV4cCI6MjA5MjM3NTE0NH0.I5EbNf4Rkr2XqKTjUUd720sP5V59wr1Xsgr8FMZy5WQ";
+
+const Query = z.object({
+  company_id: z.string().uuid(),
   q: z.string().min(1).max(100),
 });
 
@@ -13,7 +17,7 @@ export const Route = createFileRoute("/api/public/stock-search")({
     handlers: {
       GET: async ({ request }) => {
         const url = new URL(request.url);
-        const parsed = QuerySchema.safeParse({
+        const parsed = Query.safeParse({
           company_id: url.searchParams.get("company_id"),
           q: url.searchParams.get("q"),
         });
@@ -21,38 +25,22 @@ export const Route = createFileRoute("/api/public/stock-search")({
           return Response.json({ items: [] }, { status: 400 });
         }
         try {
-          const term = parsed.data.q.toLowerCase();
-          const res = await serverDatabases.listDocuments(
-            APPWRITE_DATABASE_ID,
-            "products",
-            [
-              Query.equal("company_id", parsed.data.company_id),
-              Query.limit(50),
-            ],
-          );
-
-          // Filtra por termo nos campos relevantes
-          const filtered = res.documents.filter((p: any) => {
-            const name = String(p.name || "").toLowerCase();
-            const sku = String(p.sku || "").toLowerCase();
-            const barcode = String(p.barcode || "").toLowerCase();
-            const desc = String(p.description || "").toLowerCase();
-            return name.includes(term) || sku.includes(term) || barcode.includes(term) || desc.includes(term);
+          const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+          const { data, error } = await supabase.rpc("public_stock_search" as any, {
+            _company: parsed.data.company_id,
+            _term: parsed.data.q,
           });
-
+          if (error) {
+            console.error("public_stock_search error:", error);
+            return Response.json({ items: [], error: error.message });
+          }
           return Response.json({
-            items: filtered.slice(0, 20).map((item: any) => ({
-              id: item.$id,
-              name: item.name,
-              sku: item.sku,
-              stock: item.stock,
-              sale_price: item.sale_price,
-              brand_name: item.brand,
-              unit: item.unit,
+            items: ((data as any[]) ?? []).map((item) => ({
+              ...item,
               image_url: item.image_url || null,
             })),
           });
-        } catch (error: any) {
+        } catch (error) {
           console.error("stock-search route error:", error);
           return Response.json({ items: [], error: "Erro ao buscar produtos" });
         }

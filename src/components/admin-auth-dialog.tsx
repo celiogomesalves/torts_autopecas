@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useAuth } from "@/lib/auth-context";
 import { hasPermission } from "@/lib/db";
@@ -46,6 +46,10 @@ export function AdminAuthDialog({
   const [reason, setReason] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
+  useEffect(() => {
+    if (user?.email) setEmail(user.email);
+  }, [user?.email, isOpen]);
+
   const handleAuth = async () => {
     if (requireReason && !reason.trim()) {
       toast.error("Informe o motivo desta ação.");
@@ -67,7 +71,7 @@ export function AdminAuthDialog({
     setIsLoading(true);
     try {
       // Re-autentica para verificar se a senha está correta e se o usuário tem permissão
-      const { data, error } = await appwrite.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
@@ -84,7 +88,7 @@ export function AdminAuthDialog({
         }
       } else {
         // Fallback legado ou quando não há módulo: verifica se é admin/gerente
-        const { data: membership, error: memError } = await appwrite
+        const { data: membership, error: memError } = await supabase
           .from("memberships")
           .select("role")
           .eq("user_id", data.user.id)
@@ -127,7 +131,12 @@ export function AdminAuthDialog({
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="admin@exemplo.com"
+                autoComplete="email"
               />
+              <p className="text-xs text-muted-foreground">
+                Confirme sua senha, ou digite o e-mail e a senha de um
+                administrador/gerente para autorizar.
+              </p>
             </div>
           )}
           {requireReason && (

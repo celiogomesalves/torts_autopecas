@@ -1,7 +1,7 @@
-import { createFileRoute, Outlet, useNavigate, useLocation } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useNavigate, useLocation, redirect } from "@tanstack/react-router";
 import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { appwrite } from "@/integrations/appwrite/client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth-context";
 import { AppShell } from "@/components/app-shell";
 import { fetchMyCompanies, isSuperAdmin, hasPermission } from "@/lib/db";
@@ -9,50 +9,60 @@ import { Loader2, Clock, Wrench, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useBranding } from "@/hooks/use-branding";
+import { getModuleFromPath } from "@/lib/app-modules";
 
-const PATH_TO_MODULE: Record<string, string> = {
-  "/app": "dashboard",
-  "/app/vendas": "vendas",
-  "/app/fechamento-caixa": "fechamento-caixa",
-  "/app/estoque": "estoque",
-  "/app/financeiro": "financeiro",
-  "/app/fluxo-caixa": "financeiro",
-  "/app/conciliacao": "financeiro",
-  "/app/delivery": "delivery",
-  "/app/notas-fiscais": "notas-fiscais",
-  "/app/produtos": "produtos",
-  "/app/categorias": "categorias",
-  "/app/marcas": "marcas",
-  "/app/unidades": "unidades",
-  "/app/localizacoes": "localizacoes",
-  "/app/parceiros": "parceiros",
-  "/app/formas-pagamento": "formas-pagamento",
-  "/app/relatorios": "relatorios",
-  "/app/equipe": "equipe",
-  "/app/configuracoes": "configuracoes",
-};
-
-const getModuleFromPath = (path: string) => {
-  if (path === "/app") return "dashboard";
-
-  const sortedPaths = Object.keys(PATH_TO_MODULE)
-    .filter((p) => p !== "/app")
-    .sort((a, b) => b.length - a.length);
-
-  for (const p of sortedPaths) {
-    if (path === p || path.startsWith(p + "/") || path.startsWith(p + ".")) {
-      return PATH_TO_MODULE[p];
-    }
-  }
-  return "";
-};
 
 export const Route = createFileRoute("/app")({
+  beforeLoad: async () => {
+    // Guard: bloqueia navegação antes de qualquer página carregar
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const userId = session?.user?.id;
+    if (!userId) return;
+
+    // Super admin nunca é bloqueado
+    const { data: superRoles } = await supabase
+      .from("user_roles")
+      .select("role")
+      .eq("user_id", userId)
+      .eq("role", "super_admin");
+    if (superRoles && superRoles.length > 0) return;
+
+    // Verifica memberships do usuário
+    const { data: memberships } = await supabase
+      .from("memberships")
+      .select("company_id, is_blocked")
+      .eq("user_id", userId);
+
+    if (!memberships || memberships.length === 0) return;
+
+    const hasAnyActive = memberships.some((m: any) => m.is_blocked === false);
+    if (!hasAnyActive) {
+      throw redirect({ to: "/bloqueado" });
+    }
+
+    // Se a empresa atual está bloqueada, impede acesso ao /app
+    let companyId: string | null = null;
+    if (typeof window !== "undefined") {
+      try {
+        companyId = localStorage.getItem("ap.currentCompanyId");
+      } catch {
+        /* ignore */
+      }
+    }
+    if (companyId) {
+      const current = memberships.find((m: any) => m.company_id === companyId);
+      if (current && current.is_blocked === true) {
+        throw redirect({ to: "/bloqueado" });
+      }
+    }
+  },
   loader: async ({ context: { queryClient }, location }) => {
     // Busca a sessão atual de forma rápida
     const {
       data: { session },
-    } = await appwrite.auth.getSession();
+    } = await supabase.auth.getSession();
     const userId = session?.user?.id;
 
     // Identifica o módulo atual para prefetch de permissões
@@ -72,7 +82,7 @@ export const Route = createFileRoute("/app")({
       queryClient.ensureQueryData({
         queryKey: ["systemSettings"],
         queryFn: async () => {
-          const { data } = await appwrite
+          const { data } = await supabase
             .from("system_settings" as any)
             .select("*")
             .maybeSingle();
@@ -83,7 +93,7 @@ export const Route = createFileRoute("/app")({
       queryClient.ensureQueryData({
         queryKey: ["branding"],
         queryFn: async () => {
-          const { data } = await appwrite
+          const { data } = await supabase
             .from("system_settings" as any)
             .select("brand_name, brand_logo_url")
             .maybeSingle();
@@ -132,6 +142,109 @@ function AppLayout() {
   const { user, loading, currentCompanyId, setCurrentCompanyId } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const qc = useQueryClient();
+
+  // Realtime: ao detectar bloqueio do usuário, redireciona imediatamente
+  // para /bloqueado, cortando navegação e qualquer requisição em andamento.
+  useEffect(() => {
+    if (!user?.id) return;
+    const channel = supabase
+      .channel(`memberships-block-${user.id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "memberships", filter: `user_id=eq.${user.id}` },
+        async (payload: any) => {
+          qc.invalidateQueries({ queryKey: ["companies", user.id] });
+          const row = payload?.new ?? payload?.record;
+          if (!row) return;
+          // Bloqueio na empresa atualmente em uso → redireciona já
+          if (row.is_blocked === true && row.company_id === currentCompanyId) {
+            qc.cancelQueries();
+            navigate({ to: "/bloqueado" });
+            return;
+          }
+          // Se todas as memberships ficarem bloqueadas, força saída total
+          const { data: ms } = await supabase
+            .from("memberships")
+            .select("is_blocked")
+            .eq("user_id", user.id);
+          if (ms && ms.length > 0 && ms.every((m: any) => m.is_blocked === true)) {
+            qc.cancelQueries();
+            navigate({ to: "/bloqueado" });
+          }
+        },
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id, qc, currentCompanyId, navigate]);
+
+  // Auto-logout programado por empresa: encerra a sessão se o Master
+  // disparou (ou agendou) um force_logout_at posterior ao login atual.
+  useEffect(() => {
+    if (!user?.id || !currentCompanyId) return;
+
+    const check = async () => {
+      try {
+        const [{ data: cs }, { data: sess }] = await Promise.all([
+          supabase
+            .from("company_settings" as any)
+            .select("force_logout_at")
+            .eq("company_id", currentCompanyId)
+            .maybeSingle(),
+          supabase.auth.getSession(),
+        ]);
+        const forceAt = (cs as any)?.force_logout_at
+          ? new Date((cs as any).force_logout_at).getTime()
+          : 0;
+        const session = sess?.session;
+        // "created_at" da sessão vem de auth_time do JWT (segundos)
+        const authTimeMs = ((session as any)?.user?.created_at
+          ? new Date((session as any).user.created_at).getTime()
+          : 0);
+        const issuedAtMs = (session as any)?.expires_at
+          ? ((session as any).expires_at - (session as any).expires_in) * 1000
+          : authTimeMs;
+        const sessionStart = issuedAtMs || authTimeMs;
+        if (forceAt && sessionStart && forceAt > sessionStart) {
+          await supabase.auth.signOut();
+          try {
+            const { toast } = await import("sonner");
+            toast.info("Sua sessão foi encerrada automaticamente pelo horário definido.");
+          } catch {
+            /* ignore */
+          }
+          navigate({ to: "/login" });
+        }
+      } catch (e) {
+        console.warn("auto-logout check failed", e);
+      }
+    };
+
+    // Verificação inicial + intervalo (defesa em profundidade caso o realtime caia)
+    void check();
+    const interval = window.setInterval(check, 60_000);
+
+    const channel = supabase
+      .channel(`company-auto-logout-${currentCompanyId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "company_settings",
+          filter: `company_id=eq.${currentCompanyId}`,
+        },
+        () => void check(),
+      )
+      .subscribe();
+
+    return () => {
+      window.clearInterval(interval);
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id, currentCompanyId, navigate]);
 
   useEffect(() => {
     if (loading) return;
@@ -163,7 +276,7 @@ function AppLayout() {
   const systemSettingsQ = useQuery({
     queryKey: ["systemSettings"],
     queryFn: async () => {
-      const { data } = await appwrite
+      const { data } = await supabase
         .from("system_settings" as any)
         .select("*")
         .maybeSingle();
@@ -303,7 +416,7 @@ function AppLayout() {
             <Button
               variant="ghost"
               className="w-full text-muted-foreground"
-              onClick={() => appwrite.auth.signOut()}
+              onClick={() => supabase.auth.signOut()}
             >
               Sair da conta
             </Button>

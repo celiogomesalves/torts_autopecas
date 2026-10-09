@@ -1,9 +1,17 @@
+import { makePrefetchLoader } from "@/lib/route-prefetch";
 import { PageHeading } from "@/components/page-header";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
-import { fetchPaymentMethods, upsertPaymentMethod, deletePaymentMethod } from "@/lib/db";
+import {
+  fetchPaymentMethods,
+  upsertPaymentMethod,
+  deletePaymentMethod,
+  fetchPaymentMethodsUsage,
+  isSuperAdmin,
+  hasPermission,
+} from "@/lib/db";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,17 +33,25 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, Pencil, Trash2, CreditCard, Calendar } from "lucide-react";
+import { Plus, Pencil, Trash2, CreditCard, Calendar, ArrowDownUp } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { useConfirm } from "@/components/confirm-dialog";
 import { PrintButton } from "@/components/print-button";
 import { printList } from "@/lib/print-list";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 import { SearchInput } from "@/components/search-input";
-import { matchSearch } from "@/lib/utils";
+import { cn, matchSearch } from "@/lib/utils";
 
 export const Route = createFileRoute("/app/formas-pagamento")({
+  loader: makePrefetchLoader(["paymentMethods"]),
   component: PaymentMethodsPage,
 });
 
@@ -44,12 +60,14 @@ interface FormState {
   name: string;
   requires_due_date: boolean;
   active: boolean;
+  auto_issue_nfce: boolean;
 }
 
 const empty: FormState = {
   name: "",
   requires_due_date: false,
   active: true,
+  auto_issue_nfce: false,
 };
 
 function PaymentMethodsPage() {
@@ -62,6 +80,20 @@ function PaymentMethodsPage() {
 
   const [form, setForm] = useState<FormState>(empty);
   const [search, setSearch] = useState("");
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: "asc" | "desc" } | null>(
+    null,
+  );
+  const [filterDueDate, setFilterDueDate] = useState<"all" | "yes" | "no">("all");
+  const [filterAutoNfce, setFilterAutoNfce] = useState<"all" | "yes" | "no">("all");
+  const [filterStatus, setFilterStatus] = useState<"all" | "active" | "inactive">("all");
+
+  const handleSort = (key: string) => {
+    let direction: "asc" | "desc" = "asc";
+    if (sortConfig && sortConfig.key === key && sortConfig.direction === "asc") {
+      direction = "desc";
+    }
+    setSortConfig({ key, direction });
+  };
 
   const handlePrint = () => {
     printList({
@@ -90,7 +122,53 @@ function PaymentMethodsPage() {
   });
 
   const methods = methodsQ.data ?? [];
-  const filtered = methods.filter((m) => matchSearch(m.name, search));
+  const filtered = (() => {
+    let arr = methods.filter((m) => matchSearch(m.name, search));
+    if (filterDueDate !== "all")
+      arr = arr.filter((m) => !!m.requires_due_date === (filterDueDate === "yes"));
+    if (filterAutoNfce !== "all")
+      arr = arr.filter((m) => !!(m as any).auto_issue_nfce === (filterAutoNfce === "yes"));
+    if (filterStatus !== "all")
+      arr = arr.filter((m) => !!m.active === (filterStatus === "active"));
+    const cfg = sortConfig ?? { key: "name", direction: "asc" as const };
+    const dir = cfg.direction === "asc" ? 1 : -1;
+    arr = [...arr].sort((a, b) => {
+      const av = (a as any)[cfg.key];
+      const bv = (b as any)[cfg.key];
+      if (typeof av === "boolean" || typeof bv === "boolean") {
+        return ((av ? 1 : 0) - (bv ? 1 : 0)) * dir;
+      }
+      return String(av ?? "").localeCompare(String(bv ?? ""), "pt-BR", { sensitivity: "base" }) *
+        dir;
+    });
+    return arr;
+  })();
+
+  const usageQ = useQuery({
+    queryKey: ["payment_methods_usage", cid],
+    queryFn: () => fetchPaymentMethodsUsage(cid),
+    enabled: !!cid,
+  });
+  const usage = usageQ.data ?? {};
+
+  const superAdminQ = useQuery({
+    queryKey: ["isSuperAdmin"],
+    queryFn: isSuperAdmin,
+  });
+  const isSuper = !!superAdminQ.data;
+
+  const permEditQ = useQuery({
+    queryKey: ["has_permission", cid, "formas-pagamento", "edit"],
+    queryFn: () => hasPermission(cid, "formas-pagamento", "edit"),
+    enabled: !!cid,
+  });
+  const permDeleteQ = useQuery({
+    queryKey: ["has_permission", cid, "formas-pagamento", "delete"],
+    queryFn: () => hasPermission(cid, "formas-pagamento", "delete"),
+    enabled: !!cid,
+  });
+  const canEditUsed = isSuper || !!permEditQ.data;
+  const canDeleteUsed = isSuper || !!permDeleteQ.data;
 
   const saveMut = useMutation({
     mutationFn: () => upsertPaymentMethod(cid, form),
@@ -99,29 +177,50 @@ function PaymentMethodsPage() {
         form.id ? "Sucesso! Forma de pagamento atualizada." : "Sucesso! Forma de pagamento criada.",
       );
       qc.invalidateQueries({ queryKey: ["payment_methods", cid] });
+      qc.invalidateQueries({ queryKey: ["payment_methods_usage", cid] });
       setOpen(false);
     },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const delMut = useMutation({
-    mutationFn: deletePaymentMethod,
+    mutationFn: (id: string) => deletePaymentMethod(id, cid),
     onSuccess: () => {
       toast.success("Sucesso! Forma de pagamento excluída.");
       qc.invalidateQueries({ queryKey: ["payment_methods", cid] });
+      qc.invalidateQueries({ queryKey: ["payment_methods_usage", cid] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const isSystemMethod = (m: any) =>
+    (m?.name ?? "").trim().toLowerCase() === "voucher";
+  const isSystemLocked = (m: any) => isSystemMethod(m) && !isSuper;
+
   const handleEdit = (m: any) => {
+    if (isSystemLocked(m)) {
+      toast.error(
+        "A forma de pagamento Voucher é fixa do sistema e só pode ser alterada pelo super administrador.",
+      );
+      return;
+    }
+    const used = !!usage[m.id];
+    if (used && !canEditUsed) {
+      toast.error(
+        "Esta forma de pagamento já foi usada em vendas e seu perfil não tem permissão de edição em Formas de pagamento.",
+      );
+      return;
+    }
     setForm({
       id: m.id,
       name: m.name,
       requires_due_date: m.requires_due_date,
       active: m.active,
+      auto_issue_nfce: !!(m as any).auto_issue_nfce,
     });
     setOpen(true);
   };
+
 
   const handleOpenNew = () => {
     setForm(empty);
@@ -201,6 +300,21 @@ function PaymentMethodsPage() {
                   />
                 </div>
 
+                <div className="flex items-center justify-between rounded-lg border p-3 shadow-sm">
+                  <div className="space-y-0.5">
+                    <Label>Emite NFC-e automaticamente</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Ao finalizar a venda, se pelo menos uma forma usada tiver esta opção
+                      ativa, a NFC-e é emitida automaticamente. Caso contrário, o sistema
+                      pergunta se deseja emitir.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={form.auto_issue_nfce}
+                    onCheckedChange={(v) => setForm({ ...form, auto_issue_nfce: v })}
+                  />
+                </div>
+
                 <DialogFooter>
                   <Button type="button" variant="outline" onClick={() => setOpen(false)}>
                     Cancelar
@@ -219,27 +333,76 @@ function PaymentMethodsPage() {
         </div>
       </div>
 
-      <SearchInput
-        value={search}
-        onChange={setSearch}
-        placeholder="Pesquisar formas de pagamento..."
-      />
+      <div className="space-y-3">
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Pesquisar formas de pagamento..."
+        />
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <Select value={filterDueDate} onValueChange={(v) => setFilterDueDate(v as any)}>
+            <SelectTrigger><SelectValue placeholder="Vencimento obrigatório" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Vencimento: todos</SelectItem>
+              <SelectItem value="yes">Vencimento: sim</SelectItem>
+              <SelectItem value="no">Vencimento: não</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={filterAutoNfce} onValueChange={(v) => setFilterAutoNfce(v as any)}>
+            <SelectTrigger><SelectValue placeholder="Emissão automática" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Emissão automática: todos</SelectItem>
+              <SelectItem value="yes">Emissão automática: sim</SelectItem>
+              <SelectItem value="no">Emissão automática: não</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={filterStatus} onValueChange={(v) => setFilterStatus(v as any)}>
+            <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Status: todos</SelectItem>
+              <SelectItem value="active">Status: ativo</SelectItem>
+              <SelectItem value="inactive">Status: inativo</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
 
       <div className="hidden md:block">
         <Card className="overflow-hidden">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Nome</TableHead>
-                <TableHead>Vencimento Obrigatório</TableHead>
-                <TableHead>Status</TableHead>
+                {([
+                  { key: "name", label: "Nome" },
+                  { key: "requires_due_date", label: "Vencimento Obrigatório" },
+                  { key: "auto_issue_nfce", label: "Emissão Automática" },
+                  { key: "active", label: "Status" },
+                ] as const).map((col) => (
+                  <TableHead
+                    key={col.key}
+                    className="cursor-pointer hover:bg-muted/50 transition-colors group select-none"
+                    onClick={() => handleSort(col.key)}
+                  >
+                    <div className="flex items-center gap-1">
+                      {col.label}
+                      <ArrowDownUp
+                        className={cn(
+                          "size-3",
+                          sortConfig?.key === col.key
+                            ? "opacity-100"
+                            : "opacity-0 group-hover:opacity-50",
+                        )}
+                      />
+                    </div>
+                  </TableHead>
+                ))}
                 <TableHead className="text-right">Ações</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filtered.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={4} className="text-center text-muted-foreground py-10">
+                  <TableCell colSpan={5} className="text-center text-muted-foreground py-10">
                     {methods.length === 0
                       ? "Nenhuma forma de pagamento cadastrada."
                       : `Nenhuma forma encontrada para "${search}".`}
@@ -264,17 +427,53 @@ function PaymentMethodsPage() {
                       )}
                     </TableCell>
                     <TableCell>
+                      {(m as any).auto_issue_nfce ? (
+                        <Badge variant="default" className="gap-1">Sim</Badge>
+                      ) : (
+                        <span className="text-muted-foreground">Não</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
                       <Badge variant={m.active ? "outline" : "secondary"}>
                         {m.active ? "Ativo" : "Inativo"}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => handleEdit(m)}>
+                      {isSystemMethod(m) ? (
+                        <Badge variant="outline" className="mr-2 text-[10px]">
+                          Sistema
+                        </Badge>
+                      ) : usage[m.id] && !canEditUsed ? (
+                        <Badge variant="outline" className="mr-2 text-[10px]">
+                          Bloqueada
+                        </Badge>
+                      ) : null}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => handleEdit(m)}
+                        disabled={isSystemLocked(m) || (usage[m.id] && !canEditUsed)}
+                        title={
+                          isSystemLocked(m)
+                            ? "Forma fixa do sistema — apenas super admin pode editar"
+                            : usage[m.id] && !canEditUsed
+                              ? "Forma já usada em vendas — requer permissão de edição em Formas de pagamento"
+                              : "Editar"
+                        }
+                      >
                         <Pencil className="size-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
+                        disabled={isSystemLocked(m) || (usage[m.id] && !canDeleteUsed)}
+                        title={
+                          isSystemLocked(m)
+                            ? "Forma fixa do sistema — apenas super admin pode excluir"
+                            : usage[m.id] && !canDeleteUsed
+                              ? "Forma já usada em vendas — requer permissão de exclusão em Formas de pagamento"
+                              : "Excluir"
+                        }
                         onClick={async () => {
                           if (
                             await confirm({
@@ -291,6 +490,7 @@ function PaymentMethodsPage() {
                         <Trash2 className="size-4 text-brand-red" />
                       </Button>
                     </TableCell>
+
                   </TableRow>
                 ))
               )}
@@ -337,10 +537,20 @@ function PaymentMethodsPage() {
               </div>
 
               <div className="flex justify-end items-center gap-1 border-t pt-2">
+                {isSystemMethod(m) ? (
+                  <Badge variant="outline" className="mr-auto text-[10px]">
+                    Sistema (fixa)
+                  </Badge>
+                ) : usage[m.id] && !canEditUsed ? (
+                  <Badge variant="outline" className="mr-auto text-[10px]">
+                    Bloqueada (já usada em vendas)
+                  </Badge>
+                ) : null}
                 <Button
                   variant="ghost"
                   size="icon"
                   onClick={() => handleEdit(m)}
+                  disabled={isSystemLocked(m) || (usage[m.id] && !canEditUsed)}
                   className="h-9 w-9"
                 >
                   <Pencil className="size-4 text-brand-orange" />
@@ -348,6 +558,7 @@ function PaymentMethodsPage() {
                 <Button
                   variant="ghost"
                   size="icon"
+                  disabled={isSystemLocked(m) || (usage[m.id] && !canDeleteUsed)}
                   onClick={async () => {
                     if (
                       await confirm({
@@ -365,6 +576,7 @@ function PaymentMethodsPage() {
                   <Trash2 className="size-4 text-brand-red" />
                 </Button>
               </div>
+
             </Card>
           ))
         )}

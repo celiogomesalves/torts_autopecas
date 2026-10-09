@@ -1,4 +1,4 @@
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 import type { LabelTemplate } from "@/components/label-templates-config";
 
 type Row = {
@@ -73,7 +73,7 @@ export function templateToRow(t: LabelTemplate, companyId: string): Record<strin
 }
 
 export async function fetchBarcodeLabels(companyId: string): Promise<LabelTemplate[]> {
-  const { data, error } = await appwrite
+  const { data, error } = await supabase
     .from("barcode_labels" as any)
     .select("*")
     .eq("company_id", companyId)
@@ -91,7 +91,7 @@ export async function upsertBarcodeLabel(
   const payload = templateToRow(tpl, companyId);
   const isExisting = tpl.id && !tpl.id.startsWith("custom-") && !tpl.id.startsWith("sys-");
   if (isExisting) {
-    const { data, error } = await appwrite
+    const { data, error } = await supabase
       .from("barcode_labels" as any)
       .update(payload)
       .eq("id", tpl.id)
@@ -101,7 +101,7 @@ export async function upsertBarcodeLabel(
     if (error) throw error;
     return rowToTemplate(data as unknown as Row);
   }
-  const { data, error } = await appwrite
+  const { data, error } = await supabase
     .from("barcode_labels" as any)
     .insert(payload)
     .select()
@@ -111,7 +111,7 @@ export async function upsertBarcodeLabel(
 }
 
 export async function deleteBarcodeLabel(companyId: string, id: string): Promise<void> {
-  const { error } = await appwrite
+  const { error } = await supabase
     .from("barcode_labels" as any)
     .delete()
     .eq("id", id)
@@ -121,13 +121,13 @@ export async function deleteBarcodeLabel(companyId: string, id: string): Promise
 
 export async function setBarcodeLabelAsDefault(companyId: string, id: string): Promise<void> {
   // Clear all defaults for this company
-  await appwrite
+  await supabase
     .from("barcode_labels" as any)
     .update({ is_default: false })
     .eq("company_id", companyId);
 
   // Set the new default
-  const { error } = await appwrite
+  const { error } = await supabase
     .from("barcode_labels" as any)
     .update({ is_default: true })
     .eq("id", id)

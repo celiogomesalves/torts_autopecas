@@ -26,8 +26,7 @@ import {
   ImageIcon,
 } from "lucide-react";
 import { SmartPagination } from "@/components/smart-pagination";
-import { appwrite } from "@/integrations/appwrite/client";
-import { useAuth } from "@/lib/auth-context";
+import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -77,7 +76,6 @@ export const Route = createFileRoute("/login")({
 function LoginPage() {
   const navigate = useNavigate();
   const branding = useBranding();
-  const { refreshUser } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -148,14 +146,12 @@ function LoginPage() {
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
-    const { error } = await appwrite.auth.signInWithPassword({ email, password });
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setBusy(false);
     if (error) {
-      setBusy(false);
-      toast.error(error.message || "Erro ao realizar login");
+      toast.error(error.message);
       return;
     }
-    await refreshUser();
-    setBusy(false);
     toast.success("Bem-vindo de volta!");
     navigate({ to: "/empresas" });
   };

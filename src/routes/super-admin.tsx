@@ -11,7 +11,7 @@ import {
   updateAppBaseUrl,
   clearN8nLogs,
 } from "@/lib/db";
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -58,9 +58,13 @@ import {
   History,
   Terminal,
   Trash2,
+  Webhook,
+  Send,
+  RefreshCw,
   Database,
 } from "lucide-react";
 import { toast } from "sonner";
+import { AutoLogoutTab } from "@/components/auto-logout-tab";
 import { MigrationSyncTab } from "@/components/super-admin/migration-sync-tab";
 
 const SYSTEM_MODULES = [
@@ -134,7 +138,7 @@ function SuperAdminPage() {
   const systemSettingsQ = useQuery({
     queryKey: ["systemSettings"],
     queryFn: async () => {
-      const { data, error } = await appwrite
+      const { data, error } = await supabase
         .from("system_settings" as any)
         .select("*")
         .maybeSingle();
@@ -149,7 +153,7 @@ function SuperAdminPage() {
 
   const updateSettingsMut = useMutation({
     mutationFn: async (patch: any) => {
-      const { error } = await appwrite
+      const { error } = await supabase
         .from("system_settings" as any)
         .update({ ...patch, updated_at: new Date().toISOString(), updated_by: user?.id ?? null })
         .eq("id", true);
@@ -165,7 +169,7 @@ function SuperAdminPage() {
 
   const toggleAiLookupMut = useMutation({
     mutationFn: async (enabled: boolean) => {
-      const { error } = await appwrite
+      const { error } = await supabase
         .from("system_settings" as any)
         .update({
           ai_product_lookup_enabled: enabled,
@@ -213,7 +217,7 @@ function SuperAdminPage() {
   const pending = pendingQ.data ?? [];
 
   return (
-    <div className="min-h-screen bg-background p-4 md:p-6">
+    <div className="h-screen overflow-y-auto bg-background p-4 md:p-6">
       <div className="max-w-5xl mx-auto space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
@@ -262,11 +266,25 @@ function SuperAdminPage() {
               <span>Logs API</span>
             </TabsTrigger>
             <TabsTrigger
+              value="webhooks"
+              className="flex items-center gap-1.5 py-2 px-2.5 sm:px-3 text-xs md:text-sm"
+            >
+              <Webhook className="size-4 shrink-0" />
+              <span>Webhooks</span>
+            </TabsTrigger>
+            <TabsTrigger
               value="system"
               className="flex items-center gap-1.5 py-2 px-2.5 sm:px-3 text-xs md:text-sm"
             >
               <Globe className="size-4 shrink-0" />
               <span>Sistema</span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="sessions"
+              className="flex items-center gap-1.5 py-2 px-2.5 sm:px-3 text-xs md:text-sm"
+            >
+              <Lock className="size-4 shrink-0" />
+              <span>Sessões</span>
             </TabsTrigger>
             <TabsTrigger
               value="migration-sync"
@@ -573,9 +591,18 @@ function SuperAdminPage() {
             <N8nIntegrationTab />
           </TabsContent>
 
+          <TabsContent value="webhooks" className="space-y-4">
+            <DeliveryWebhooksTab />
+          </TabsContent>
+
           <TabsContent value="system" className="space-y-4">
             <BrandingCard />
+            <BulkCountVerificationCard />
             <SystemSettingsTab />
+          </TabsContent>
+
+          <TabsContent value="sessions" className="space-y-4">
+            <AutoLogoutTab />
           </TabsContent>
 
           <TabsContent value="migration-sync" className="space-y-4">
@@ -663,7 +690,7 @@ function SystemSettingsTab() {
                 id="base_url"
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder="https://tortsautopecas.vercel.app"
+                placeholder="https://sua-loja.lovable.app"
               />
               <Button
                 onClick={() => updateMut.mutate(baseUrl)}
@@ -715,7 +742,7 @@ function BrandingCard() {
   const brandingQ = useQuery({
     queryKey: ["branding-admin"],
     queryFn: async () => {
-      const { data } = await appwrite
+      const { data } = await supabase
         .from("system_settings" as any)
         .select("brand_name, brand_logo_url")
         .maybeSingle();
@@ -735,7 +762,7 @@ function BrandingCard() {
 
   const saveMut = useMutation({
     mutationFn: async (patch: { brand_name: string | null; brand_logo_url: string | null }) => {
-      const { error } = await appwrite
+      const { error } = await supabase
         .from("system_settings" as any)
         .update({ ...patch, updated_at: new Date().toISOString(), updated_by: user?.id ?? null })
         .eq("id", true);
@@ -754,12 +781,12 @@ function BrandingCard() {
       setUploading(true);
       const ext = file.name.split(".").pop() || "png";
       const path = `logo-${Date.now()}.${ext}`;
-      const { error: upErr } = await appwrite.storage.from("branding").upload(path, file, {
+      const { error: upErr } = await supabase.storage.from("branding").upload(path, file, {
         upsert: true,
         contentType: file.type,
       });
       if (upErr) throw upErr;
-      const { data } = appwrite.storage.from("branding").getPublicUrl(path);
+      const { data } = supabase.storage.from("branding").getPublicUrl(path);
       const url = data.publicUrl;
       setLogoUrl(url);
       await saveMut.mutateAsync({ brand_name: name || null, brand_logo_url: url });
@@ -860,8 +887,8 @@ function BrandingCard() {
   );
 }
 function N8nIntegrationTab() {
-  const [apiUrl] = useState(
-    () => (typeof window !== "undefined" ? window.location.origin : ""),
+  const [supabaseUrl] = useState(
+    () => (window as any).env?.SUPABASE_URL || "https://sua-url.supabase.co",
   );
   const [infoDialog, setInfoDialog] = useState<{
     title: string;
@@ -1039,7 +1066,7 @@ function N8nIntegrationTab() {
                   onClick={() =>
                     setInfoDialog({
                       title: ep.title,
-                      endpoint: `${apiUrl}${ep.path}`,
+                      endpoint: `${supabaseUrl}${ep.path}`,
                       body: ep.body,
                       response: ep.response,
                       headers: {
@@ -1053,7 +1080,7 @@ function N8nIntegrationTab() {
                 </Button>
               </div>
               <div className="p-3 bg-muted rounded-md font-mono text-[10px] md:text-xs break-all relative group">
-                POST {apiUrl}
+                POST {supabaseUrl}
                 {ep.path}
               </div>
             </div>
@@ -1089,8 +1116,8 @@ function N8nIntegrationTab() {
               <Info className="size-4" /> Dica de Autenticação
             </div>
             <p className="text-xs text-indigo-800/80 leading-relaxed">
-              Use o header <code>x-api-key</code> com o valor da chave secreta definida nas variáveis
-              de ambiente (N8N_API_KEY).
+              Use o header <code>x-api-key</code> com o valor da chave secreta definida no seu
+              Supabase (N8N_API_KEY).
             </p>
           </Card>
         </div>
@@ -1177,7 +1204,7 @@ function N8nLogsTab() {
   const logsQ = useQuery({
     queryKey: ["n8n-logs"],
     queryFn: async () => {
-      const { data, error } = await appwrite
+      const { data, error } = await supabase
         .from("activity_logs")
         .select("*")
         .eq("entity", "n8n_api")
@@ -1403,5 +1430,455 @@ function N8nLogsTab() {
         </AlertDialogContent>
       </AlertDialog>
     </Card>
+  );
+}
+
+function BulkCountVerificationCard() {
+  const qc = useQueryClient();
+  const { user } = useAuth();
+
+  const flagQ = useQuery({
+    queryKey: ["system-bulk-count-verification"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("system_settings" as any)
+        .select("bulk_count_verification_enabled")
+        .maybeSingle();
+      if (error) throw error;
+      return Boolean((data as any)?.bulk_count_verification_enabled ?? false);
+    },
+  });
+
+  const toggleMut = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const { error } = await supabase
+        .from("system_settings" as any)
+        .update({
+          bulk_count_verification_enabled: enabled,
+          updated_at: new Date().toISOString(),
+          updated_by: user?.id ?? null,
+        })
+        .eq("id", true);
+      if (error) throw error;
+      return enabled;
+    },
+    onSuccess: (enabled) => {
+      toast.success(
+        enabled
+          ? "Seleção em massa para conferência habilitada"
+          : "Seleção em massa para conferência desabilitada",
+      );
+      qc.invalidateQueries({ queryKey: ["system-bulk-count-verification"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <Card className="p-6 max-w-2xl">
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <Label htmlFor="bulk_verify_global" className="text-sm font-medium">
+            Permitir seleção em massa na contagem
+          </Label>
+          <p className="text-xs text-muted-foreground max-w-xl">
+            Quando habilitado, os usuários podem selecionar vários itens da contagem e marcá-los
+            como verificados de uma só vez (quantidade e valor permanecem inalterados). Recurso
+            controlado exclusivamente pelo Super Admin.
+          </p>
+        </div>
+        <Switch
+          id="bulk_verify_global"
+          checked={Boolean(flagQ.data)}
+          disabled={flagQ.isLoading || toggleMut.isPending}
+          onCheckedChange={(v) => toggleMut.mutate(v)}
+        />
+      </div>
+    </Card>
+  );
+}
+
+const AVAILABLE_WEBHOOK_EVENTS: { value: string; label: string; description: string }[] = [
+  { value: "order_created", label: "order_created", description: "Novo pedido de delivery criado" },
+  { value: "status_changed", label: "status_changed", description: "Mudança de status do pedido" },
+  { value: "driver_assigned", label: "driver_assigned", description: "Entregador atribuído ao pedido" },
+];
+
+function DeliveryWebhooksTab() {
+  const qc = useQueryClient();
+  const { currentCompanyId } = useAuth();
+  const [enabled, setEnabled] = useState(true);
+  const [edgeUrl, setEdgeUrl] = useState("");
+  const [internalToken, setInternalToken] = useState("");
+  const [events, setEvents] = useState<string[]>(AVAILABLE_WEBHOOK_EVENTS.map((e) => e.value));
+  const [testCompanyId, setTestCompanyId] = useState<string>(currentCompanyId ?? "");
+
+  useEffect(() => {
+    if (currentCompanyId) setTestCompanyId(currentCompanyId);
+  }, [currentCompanyId]);
+
+  const configQ = useQuery({
+    queryKey: ["webhook-config"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("app_config" as any)
+        .select("key, value")
+        .in("key", [
+          "n8n_webhook_edge_url",
+          "n8n_internal_token",
+          "n8n_webhook_enabled",
+          "n8n_webhook_events",
+        ]);
+      if (error) throw error;
+      const map = Object.fromEntries(((data as any[]) ?? []).map((r) => [r.key, r.value]));
+      let evts: string[] = AVAILABLE_WEBHOOK_EVENTS.map((e) => e.value);
+      try {
+        if (map["n8n_webhook_events"]) evts = JSON.parse(map["n8n_webhook_events"]);
+      } catch {
+        // ignore
+      }
+      return {
+        url: map["n8n_webhook_edge_url"] ?? "",
+        token: map["n8n_internal_token"] ?? "",
+        enabled: String(map["n8n_webhook_enabled"] ?? "true").toLowerCase() !== "false",
+        events: evts,
+      };
+    },
+  });
+
+  useEffect(() => {
+    if (configQ.data) {
+      setEdgeUrl(configQ.data.url);
+      setInternalToken(configQ.data.token);
+      setEnabled(configQ.data.enabled);
+      setEvents(configQ.data.events);
+    }
+  }, [configQ.data]);
+
+  const saveMut = useMutation({
+    mutationFn: async () => {
+      const rows = [
+        { key: "n8n_webhook_edge_url", value: edgeUrl.trim() },
+        { key: "n8n_internal_token", value: internalToken.trim() },
+        { key: "n8n_webhook_enabled", value: enabled ? "true" : "false" },
+        { key: "n8n_webhook_events", value: JSON.stringify(events) },
+      ];
+      const { error } = await supabase
+        .from("app_config" as any)
+        .upsert(rows, { onConflict: "key" });
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("Configuração salva");
+      qc.invalidateQueries({ queryKey: ["webhook-config"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const deliveriesQ = useQuery({
+    queryKey: ["webhook-deliveries"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("webhook_deliveries" as any)
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(30);
+      if (error) throw error;
+      return (data as any[]) ?? [];
+    },
+    refetchInterval: 5000,
+  });
+
+  const testMut = useMutation({
+    mutationFn: async () => {
+      const { data, error } = await supabase.functions.invoke("n8n-delivery-webhook", {
+        body: {
+          event: "test_event",
+          company_id: testCompanyId || null,
+          delivery_id: null,
+          test: true,
+          message: "Teste de webhook enviado pelo Super Admin",
+          timestamp: new Date().toISOString(),
+        },
+        headers: { "x-internal-token": internalToken },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (data: any) => {
+      if (data?.ok) toast.success(`Webhook enviado (status ${data.status})`);
+      else toast.error(`Falha: ${data?.error ?? "erro desconhecido"}`);
+      qc.invalidateQueries({ queryKey: ["webhook-deliveries"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const clearMut = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase
+        .from("webhook_deliveries" as any)
+        .delete()
+        .gte("created_at", "1900-01-01");
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast.success("Logs limpos");
+      qc.invalidateQueries({ queryKey: ["webhook-deliveries"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const retryMut = useMutation({
+    mutationFn: async (row: any) => {
+      const { data, error } = await supabase.functions.invoke("n8n-delivery-webhook", {
+        body: row.payload,
+        headers: { "x-internal-token": internalToken },
+      });
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      toast.success("Reenviado");
+      qc.invalidateQueries({ queryKey: ["webhook-deliveries"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const toggleEvent = (value: string, checked: boolean) => {
+    setEvents((prev) =>
+      checked ? Array.from(new Set([...prev, value])) : prev.filter((v) => v !== value),
+    );
+  };
+
+  const fieldsDisabled = !enabled;
+
+  return (
+    <div className="space-y-4 max-w-5xl">
+      <Card className="p-4 md:p-6">
+        <div className="flex items-start justify-between gap-4 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="size-10 rounded-lg bg-purple-500/10 text-purple-600 flex items-center justify-center shrink-0">
+              <Webhook className="size-5" />
+            </div>
+            <div>
+              <h3 className="text-lg font-bold">Webhooks de Delivery → n8n</h3>
+              <p className="text-sm text-muted-foreground">
+                Quando desabilitado, nenhum evento é disparado para o n8n (apenas envios de teste
+                continuam funcionando).
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Label htmlFor="webhook_enabled" className="text-sm">
+              {enabled ? "Habilitado" : "Desabilitado"}
+            </Label>
+            <Switch id="webhook_enabled" checked={enabled} onCheckedChange={setEnabled} />
+          </div>
+        </div>
+
+        <div className={`grid gap-4 ${fieldsDisabled ? "opacity-60" : ""}`}>
+          <div className="space-y-2">
+            <Label htmlFor="edge_url">URL da Edge Function (chamada pelo trigger)</Label>
+            <Input
+              id="edge_url"
+              value={edgeUrl}
+              onChange={(e) => setEdgeUrl(e.target.value)}
+              disabled={fieldsDisabled}
+              placeholder="https://oapfhdcvugcileuxumpb.supabase.co/functions/v1/n8n-delivery-webhook"
+            />
+            <p className="text-xs text-muted-foreground">
+              O trigger Postgres chama este endpoint. Cole a URL pública da função.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="internal_token">Token Interno (mesmo valor do secret N8N_INTERNAL_TOKEN)</Label>
+            <Input
+              id="internal_token"
+              type="password"
+              value={internalToken}
+              onChange={(e) => setInternalToken(e.target.value)}
+              disabled={fieldsDisabled}
+              placeholder="Cole aqui o mesmo valor do secret N8N_INTERNAL_TOKEN"
+            />
+            <p className="text-xs text-muted-foreground">
+              Deve ser idêntico ao secret <code>N8N_INTERNAL_TOKEN</code> configurado nos secrets do
+              projeto. O edge function valida esse header antes de encaminhar ao n8n.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Eventos disparados</Label>
+            <div className="grid sm:grid-cols-2 gap-2 rounded-md border border-border p-3">
+              {AVAILABLE_WEBHOOK_EVENTS.map((ev) => {
+                const checked = events.includes(ev.value);
+                return (
+                  <label
+                    key={ev.value}
+                    className={`flex items-start gap-2 cursor-pointer rounded p-2 hover:bg-muted/50 ${
+                      fieldsDisabled ? "pointer-events-none" : ""
+                    }`}
+                  >
+                    <Checkbox
+                      checked={checked}
+                      disabled={fieldsDisabled}
+                      onCheckedChange={(v) => toggleEvent(ev.value, v === true)}
+                    />
+                    <div className="space-y-0.5">
+                      <div className="text-sm font-mono">{ev.label}</div>
+                      <div className="text-xs text-muted-foreground">{ev.description}</div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Apenas eventos marcados serão encaminhados ao n8n. Envios de teste sempre passam.
+            </p>
+          </div>
+
+          <Button
+            onClick={() => saveMut.mutate()}
+            disabled={saveMut.isPending}
+            className="bg-brand-red hover:bg-brand-red/90 text-white gap-2 w-fit"
+          >
+            <Save className="size-4" /> {saveMut.isPending ? "Salvando..." : "Salvar configuração"}
+          </Button>
+        </div>
+      </Card>
+
+      <Card className="p-4 md:p-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Send className="size-4 text-purple-600" />
+          <h4 className="font-semibold">Testar envio</h4>
+        </div>
+        <div className="grid sm:grid-cols-[1fr_auto] gap-2 items-end">
+          <div className="space-y-1">
+            <Label htmlFor="test_company_id" className="text-xs">
+              company_id (opcional, para roteamento no n8n)
+            </Label>
+            <Input
+              id="test_company_id"
+              value={testCompanyId}
+              onChange={(e) => setTestCompanyId(e.target.value)}
+              placeholder="UUID da empresa"
+            />
+          </div>
+          <Button
+            onClick={() => testMut.mutate()}
+            disabled={testMut.isPending || !testCompanyId}
+            className="gap-2"
+          >
+            <Send className="size-4" />
+            {testMut.isPending ? "Enviando..." : "Enviar teste"}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground mt-2">
+          Envia um payload <code>test_event</code> diretamente à edge function. Útil para validar
+          conexão, assinatura HMAC e roteamento no n8n.
+        </p>
+      </Card>
+
+
+      <Card className="p-4 md:p-6">
+        <div className="flex items-center justify-between gap-2 mb-4">
+          <div className="flex items-center gap-2">
+            <History className="size-4 text-purple-600" />
+            <h4 className="font-semibold">Últimos envios (auto-atualiza)</h4>
+          </div>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-2 text-destructive">
+                <Trash2 className="size-4" /> Limpar
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Limpar logs de webhooks?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Remove permanentemente todos os registros de envios. Não afeta as integrações.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => clearMut.mutate()}
+                  className="bg-destructive hover:bg-destructive/90"
+                >
+                  Limpar
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+
+        <div className="rounded-md border border-border overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Quando</TableHead>
+                <TableHead>Evento</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>HTTP</TableHead>
+                <TableHead>company_id</TableHead>
+                <TableHead className="text-right">Ações</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {deliveriesQ.isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                    Carregando...
+                  </TableCell>
+                </TableRow>
+              ) : (deliveriesQ.data ?? []).length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                    Nenhum envio registrado ainda.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                (deliveriesQ.data ?? []).map((row: any) => (
+                  <TableRow key={row.id}>
+                    <TableCell className="text-xs whitespace-nowrap">
+                      {new Date(row.created_at).toLocaleString("pt-BR")}
+                    </TableCell>
+                    <TableCell className="text-xs font-mono">{row.event}</TableCell>
+                    <TableCell>
+                      <Badge
+                        variant="outline"
+                        className={
+                          row.status === "sent"
+                            ? "border-emerald-500 text-emerald-600"
+                            : row.status === "failed"
+                              ? "border-brand-red text-brand-red"
+                              : "border-amber-500 text-amber-600"
+                        }
+                      >
+                        {row.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-xs">{row.last_status_code ?? "—"}</TableCell>
+                    <TableCell className="text-[10px] font-mono text-muted-foreground">
+                      {row.company_id ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => retryMut.mutate(row)}
+                        disabled={retryMut.isPending}
+                        className="gap-1"
+                      >
+                        <RefreshCw className="size-3.5" /> Reenviar
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </Card>
+    </div>
   );
 }

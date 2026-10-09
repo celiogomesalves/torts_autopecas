@@ -1,9 +1,10 @@
+import { makePrefetchLoader } from "@/lib/route-prefetch";
 import { PageHeading } from "@/components/page-header";
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 import {
   fetchProducts,
   fetchCategories,
@@ -26,7 +27,7 @@ import {
   fetchProductReferences,
   fetchProductReferencesByCompany,
   replaceProductReferences,
-  findProductByBarcode,
+  
   updateProductsLocationBatch,
   logActivity,
 } from "@/lib/db";
@@ -41,6 +42,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
+  DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
 import {
@@ -88,6 +90,7 @@ import {
   Square,
   Ruler,
   Sparkles,
+  Loader2,
   Copy,
   Wand2,
   Tags,
@@ -122,9 +125,16 @@ import { Textarea } from "@/components/ui/textarea";
 import { EntitySelectorDialog } from "@/components/entity-selector-dialog";
 import { useConfirm } from "@/components/confirm-dialog";
 import { validateStockCode } from "@/lib/stock-code";
+import { generateProductListPdf, summarizeDescription, type ProductPdfRow } from "@/lib/product-list-pdf";
 import { fetchCompanyRoles, hasPermission } from "@/lib/db";
+import { lookupNcmByCategory } from "@/lib/ncm-lookup.functions";
+import { NcmInfoButton } from "@/components/ncm-info-button";
+import { findSimilarNames, normalizeName } from "@/lib/string-similarity";
+import { useServerFn } from "@tanstack/react-start";
+
 
 export const Route = createFileRoute("/app/produtos")({
+  loader: makePrefetchLoader(["categories", "brands", "suppliers", "locations", "units", "team", "productReferences"]),
   component: ProductsPage,
 });
 
@@ -139,7 +149,7 @@ interface FormState {
   name: string;
   sku: string;
   alternativeCode: string;
-  barcode: string;
+  
   brandId: string;
   categoryId: string;
   supplierId: string;
@@ -151,13 +161,14 @@ interface FormState {
   minStock: string;
   description: string;
   imageUrl: string;
+  ncm: string;
   references: ProductRefRow[];
 }
 const empty: FormState = {
   name: "",
   sku: "",
   alternativeCode: "",
-  barcode: "",
+  
   brandId: "none",
   categoryId: "none",
   supplierId: "none",
@@ -169,6 +180,7 @@ const empty: FormState = {
   minStock: "0",
   description: "",
   imageUrl: "",
+  ncm: "",
   references: [],
 };
 
@@ -204,24 +216,29 @@ function ProductsPage() {
     return saved ? Number(saved) : 50;
   });
 
-  // Debounce da busca para não sobrecarregar o banco
+  // Debounce curto para uma busca quase instantânea conforme o usuário digita
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(search);
-    }, 400); // 400ms de atraso
+    }, 180);
     return () => clearTimeout(timer);
   }, [search]);
-
   const [locationFilter, setLocationFilter] = useState<string>("all");
   const [hasRefsFilter, setHasRefsFilter] = useState(false);
+  const [ncmFilter, setNcmFilter] = useState<"all" | "with" | "without">("all");
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedSearch, locationFilter, hasRefsFilter, ncmFilter]);
 
   const productsQ = useQuery({
     queryKey: [
       "products-paginated",
       cid,
-      search,
+      debouncedSearch,
       locationFilter,
       hasRefsFilter,
+      ncmFilter,
       currentPage,
       pageSize,
     ],
@@ -230,11 +247,14 @@ function ProductsPage() {
         companyId: cid,
         page: currentPage - 1,
         pageSize: pageSize,
-        search: search,
+        search: debouncedSearch,
         locationId: locationFilter,
         hasAdditionalBrands: hasRefsFilter,
+        ncmFilter,
       }),
     enabled: !!cid,
+    placeholderData: (prev) => prev,
+
   });
 
   const products = productsQ.data?.data ?? [];
@@ -274,9 +294,9 @@ function ProductsPage() {
   const companySettingsQ = useQuery({
     queryKey: ["company-settings", cid],
     queryFn: async () => {
-      const { data, error } = await appwrite
+      const { data, error } = await supabase
         .from("company_settings")
-        .select("*")
+        .select("company_id, profit_margin, stock_code_auto_generate, stock_code_prefix, default_ncm")
         .eq("company_id", cid)
         .maybeSingle();
 
@@ -291,7 +311,7 @@ function ProductsPage() {
   const barcodeSettingsQ = useQuery({
     queryKey: ["company-settings", cid, "barcode-scanner"],
     queryFn: async () => {
-      const { data, error } = await appwrite
+      const { data, error } = await supabase
         .from("company_settings" as any)
         .select("barcode_scanner_enabled")
         .eq("company_id", cid)
@@ -307,7 +327,7 @@ function ProductsPage() {
   const aiSettingsQ = useQuery({
     queryKey: ["company-settings", cid, "ai"],
     queryFn: async () => {
-      const { data, error } = await appwrite.rpc("get_ai_settings" as any, { _company: cid });
+      const { data, error } = await supabase.rpc("get_ai_settings" as any, { _company: cid });
       if (error) throw error;
       return {
         enabled: (data as any).enabled,
@@ -321,7 +341,7 @@ function ProductsPage() {
   const systemAiQ = useQuery({
     queryKey: ["system-settings", "ai-product-lookup"],
     queryFn: async () => {
-      const { data } = await appwrite
+      const { data } = await supabase
         .from("system_settings" as any)
         .select("ai_product_lookup_enabled")
         .maybeSingle();
@@ -350,13 +370,17 @@ function ProductsPage() {
 
   const [catOpen, setCatOpen] = useState(false);
   const [catName, setCatName] = useState("");
+  const [catNcm, setCatNcm] = useState("");
+  const [catNcmLookupBusy, setCatNcmLookupBusy] = useState(false);
+  const [prodNcmLookupBusy, setProdNcmLookupBusy] = useState(false);
+  const lookupNcm = useServerFn(lookupNcmByCategory);
   const [supOpen, setSupOpen] = useState(false);
   const [supName, setSupName] = useState("");
   const [brandOpen, setBrandOpen] = useState(false);
   const [brandName, setBrandName] = useState("");
   const [brandSearch, setBrandSearch] = useState("");
   const [isScanning, setIsScanning] = useState(false);
-  const [scanningField, setScanningField] = useState<"sku" | "alternativeCode" | "barcode">("sku");
+  const [scanningField, setScanningField] = useState<"sku" | "alternativeCode">("sku");
   const [isDictating, setIsDictating] = useState(false);
   const [dictationElapsed, setDictationElapsed] = useState(0);
   const [duplicateProduct, setDuplicateProduct] = useState<Product | null>(null);
@@ -386,7 +410,6 @@ function ProductsPage() {
     codes: string[];
     imageUrl: string;
     averagePurchasePrice?: number;
-    barcode?: string;
     existingProduct?: Product | null;
   } | null>(null);
   const [aiApplyCostPrice, setAiApplyCostPrice] = useState(true);
@@ -437,8 +460,7 @@ function ProductsPage() {
         filtered = filtered.filter(
           (p) =>
             (p.sku && p.sku.toUpperCase().includes(searchUpper)) ||
-            (p.alternative_code && p.alternative_code.toUpperCase().includes(searchUpper)) ||
-            (p.barcode && p.barcode.includes(term)),
+            (p.alternative_code && p.alternative_code.toUpperCase().includes(searchUpper)),
         );
       }
 
@@ -494,7 +516,7 @@ function ProductsPage() {
   const membersQ = useQuery({
     queryKey: ["company-members", cid],
     queryFn: async () => {
-      const { data: ms, error } = await appwrite
+      const { data: ms, error } = await supabase
         .from("memberships")
         .select("user_id")
         .eq("company_id", cid)
@@ -502,7 +524,7 @@ function ProductsPage() {
       if (error) throw error;
       const ids = (ms ?? []).map((m: any) => m.user_id).filter(Boolean);
       if (ids.length === 0) return [];
-      const { data: profs, error: pErr } = await appwrite
+      const { data: profs, error: pErr } = await supabase
         .from("profiles")
         .select("id, name, email")
         .in("id", ids);
@@ -544,7 +566,6 @@ function ProductsPage() {
     imageUrl: string;
     imageOk?: boolean;
     averagePurchasePrice?: number;
-    barcode?: string;
     existingProduct?: Product | null;
   };
   const aiLookupCacheRef = useRef<Map<string, AiLookupCacheEntry>>(new Map());
@@ -579,7 +600,7 @@ function ProductsPage() {
 
     setAiLookupLoading(true);
     try {
-      const { data, error } = await appwrite.functions.invoke("product-ai-lookup", {
+      const { data, error } = await supabase.functions.invoke("product-ai-lookup", {
         body: {
           query: term,
           brand: selectedBrand,
@@ -595,14 +616,6 @@ function ProductsPage() {
         .map((c) => c.trim())
         .filter(Boolean);
 
-      const aiBarcode = String(data.barcode || "").replace(/\D/g, "");
-      // Procura produto existente com esse EAN
-      const existingByBarcode = aiBarcode
-        ? products.find(
-            (p) => ((p as any).barcode || "").trim() === aiBarcode && p.id !== editing?.id,
-          ) || null
-        : null;
-
       const result: AiLookupCacheEntry = {
         name: String(data.name || term),
         details: String(data.details || ""),
@@ -611,8 +624,7 @@ function ProductsPage() {
         codes: codes,
         imageUrl: String(data.imageUrl || ""),
         averagePurchasePrice: Number(data.averagePurchasePrice || 0),
-        barcode: aiBarcode,
-        existingProduct: existingByBarcode,
+        existingProduct: null,
       };
       aiLookupCacheRef.current.set(cacheKey, result);
       setAiLookupResult(result);
@@ -654,7 +666,7 @@ function ProductsPage() {
       name: aiLookupResult.name,
       brandId: brandIdToApply,
       sku: (f.sku || selectedCode || aiLookupResult.originalCode || "").trim(),
-      barcode: f.barcode || aiLookupResult.barcode || "",
+      
       costPrice:
         aiApplyCostPrice &&
         aiLookupResult.averagePurchasePrice &&
@@ -744,7 +756,7 @@ function ProductsPage() {
             p.name,
             p.sku,
             p.alternative_code,
-            (p as any).barcode,
+            
             brandName,
             locName,
             categoryName,
@@ -904,7 +916,7 @@ function ProductsPage() {
   // Retorna mensagem de bloqueio ou null se livre.
   const checkProductLock = async (productId: string): Promise<string | null> => {
     // 1. Delivery: buscar sale_items do produto e cruzar com delivery_orders ativos
-    const { data: itemRows } = await appwrite
+    const { data: itemRows } = await supabase
       .from("sale_items")
       .select("sale_id")
       .eq("product_id", productId);
@@ -912,7 +924,7 @@ function ProductsPage() {
       new Set((itemRows || []).map((r: any) => r.sale_id).filter(Boolean)),
     );
     if (saleIds.length) {
-      const { data: orders } = await appwrite
+      const { data: orders } = await supabase
         .from("delivery_orders")
         .select("id, customer_name, status")
         .in("sale_id", saleIds)
@@ -922,7 +934,7 @@ function ProductsPage() {
       }
     }
     // 2. PDV: reservas temporárias no carrinho
-    const { data: pdvReservations } = await (appwrite as any)
+    const { data: pdvReservations } = await (supabase as any)
       .from("stock_reservations")
       .select("id")
       .eq("product_id", productId)
@@ -959,7 +971,7 @@ function ProductsPage() {
       name: p.name,
       sku: p.sku,
       alternativeCode: p.alternative_code || "",
-      barcode: (p as any).barcode || "",
+      
       brandId: p.brand_id ?? "none",
       categoryId: p.category_id ?? "none",
       supplierId: p.supplier_id ?? "none",
@@ -971,10 +983,42 @@ function ProductsPage() {
       minStock: String(p.min_stock),
       description: p.description || "",
       imageUrl: p.image_url || "",
+      ncm: (() => {
+        const cat = categories.find((c) => c.id === p.category_id);
+        const catNcm = ((cat as any)?.ncm || "").toString().trim();
+        const prodNcm = ((p as any).ncm || "").toString().trim();
+        const defaultNcm = ((companySettingsQ.data as any)?.default_ncm || "").toString().trim();
+        // Prioridade: NCM do produto > NCM da categoria > NCM padrão da empresa
+        return prodNcm || catNcm || defaultNcm || "";
+      })(),
+
+
       references: refs,
     });
     setOpen(true);
+
+    // Auto-save silencioso: se o produto não tem NCM no banco mas foi resolvido
+    // pela categoria ou pelo padrão da empresa, persiste para evitar bloqueio na NFC-e
+    try {
+      const prodNcmDb = ((p as any).ncm || "").toString().replace(/\D/g, "");
+      if (prodNcmDb.length !== 8) {
+        const cat = categories.find((c) => c.id === p.category_id);
+        const catNcm = ((cat as any)?.ncm || "").toString().replace(/\D/g, "");
+        const defaultNcm = ((companySettingsQ.data as any)?.default_ncm || "")
+          .toString()
+          .replace(/\D/g, "");
+        const resolved = catNcm.length === 8 ? catNcm : defaultNcm.length === 8 ? defaultNcm : "";
+        if (resolved) {
+          await updateProduct(p.id, { ncm: resolved } as any, user?.id);
+          qc.invalidateQueries({ queryKey: ["products-paginated"] });
+          qc.invalidateQueries({ queryKey: ["products"] });
+        }
+      }
+    } catch {
+      /* silencioso */
+    }
   };
+
 
   const keepOpenRef = useRef(false);
   const ignoreDuplicateRef = useRef(false);
@@ -1140,21 +1184,28 @@ function ProductsPage() {
         if (stockErr) throw new Error(stockErr);
       }
 
+      const ncmDigits = form.ncm.replace(/\D/g, "");
+      if (ncmDigits.length !== 8 || ncmDigits === "00000000") {
+        throw new Error("O NCM é obrigatório e deve ter 8 dígitos válidos");
+      }
+
+      const selectedLocation = locations.find((l) => l.id === form.locationId);
+      if (!form.locationId || form.locationId === "none" || !selectedLocation) {
+        throw new Error("Selecione a localização no estoque");
+      }
+
       const skuNorm = form.sku.trim().toLowerCase();
       const altCodeNorm = stockCode.toLowerCase();
-      const barcodeNorm = form.barcode.trim();
 
       const duplicate = products.find((p) => {
         const pSkuNorm = p.sku.trim().toLowerCase();
         const pAltNorm = (p.alternative_code || "").trim().toLowerCase();
-        const pBarcode = ((p as any).barcode || "").trim();
 
         return (
           (pSkuNorm === skuNorm ||
             (altCodeNorm && pSkuNorm === altCodeNorm) ||
             (skuNorm && pAltNorm === skuNorm) ||
-            (altCodeNorm && pAltNorm === altCodeNorm) ||
-            (barcodeNorm && pBarcode === barcodeNorm)) &&
+            (altCodeNorm && pAltNorm === altCodeNorm)) &&
           p.id !== editing?.id
         );
       });
@@ -1169,8 +1220,8 @@ function ProductsPage() {
       const payload = {
         sku: form.sku.trim(),
         alternative_code: stockCode || null,
-        barcode: barcodeNorm || null,
-        name: form.name.trim(),
+
+        name: form.name.trim().toUpperCase(),
         brand: selectedBrand?.name || null,
         brand_id: form.brandId === "none" ? null : form.brandId,
         category_id: form.categoryId,
@@ -1180,6 +1231,7 @@ function ProductsPage() {
         unit_id: unitIdValue,
         description: form.description.trim() || null,
         image_url: form.imageUrl || null,
+        ncm: ncmDigits,
         cost_price: parseCurrency(form.costPrice),
         sale_price: parseCurrency(form.salePrice),
         min_stock: Math.max(0, Number(form.minStock) || 0),
@@ -1193,7 +1245,7 @@ function ProductsPage() {
           {
             sku: payload.sku,
             alternative_code: payload.alternative_code,
-            barcode: payload.barcode,
+            
             name: payload.name,
             brand: payload.brand,
             brand_id: payload.brand_id,
@@ -1204,6 +1256,7 @@ function ProductsPage() {
             unit_id: payload.unit_id,
             description: payload.description,
             image_url: payload.image_url,
+            ncm: payload.ncm,
             cost_price: payload.cost_price,
             sale_price: payload.sale_price,
             min_stock: payload.min_stock,
@@ -1259,6 +1312,8 @@ function ProductsPage() {
       qc.invalidateQueries({ queryKey: ["products-paginated-stock"] });
       qc.invalidateQueries({ queryKey: ["products", cid] });
       qc.invalidateQueries({ queryKey: ["product_references", cid] });
+      qc.invalidateQueries({ queryKey: ["all-products-for-count", cid] });
+      qc.invalidateQueries({ queryKey: ["stock_count_items"] });
       if (!editing) {
         lastSelectionRef.current = {
           brandId: form.brandId,
@@ -1330,12 +1385,18 @@ function ProductsPage() {
   });
 
   const createCatMut = useMutation({
-    mutationFn: () => createCategory(cid, catName.trim(), undefined, user?.id),
+    mutationFn: () =>
+      createCategory(cid, catName.trim(), undefined, user?.id, catNcm.trim()),
     onSuccess: (cat) => {
       toast.success("Sucesso! Categoria criada.");
       qc.invalidateQueries({ queryKey: ["categories", cid] });
-      setForm((f) => ({ ...f, categoryId: cat.id }));
+      setForm((f) => ({
+        ...f,
+        categoryId: cat.id,
+        ncm: (cat as any).ncm || f.ncm,
+      }));
       setCatName("");
+      setCatNcm("");
       setCatOpen(false);
     },
     onError: (e: any) => {
@@ -1549,7 +1610,7 @@ function ProductsPage() {
           const product = products.find((p) => p.id === productId);
           const productName = product?.name || productId;
 
-          const { error } = await appwrite
+          const { error } = await supabase
             .from("products")
             .update({
               location_id: locId === "none" ? null : locId,
@@ -1632,6 +1693,67 @@ function ProductsPage() {
     }
   };
 
+  const [pdfPreview, setPdfPreview] = useState<{
+    rows: ProductPdfRow[];
+    companyName: string;
+    skipped: number;
+  } | null>(null);
+  const [pdfShowCategory, setPdfShowCategory] = useState(true);
+  const [pdfShowBrand, setPdfShowBrand] = useState(true);
+
+
+  const handleGenerateProductPdf = async () => {
+
+    const selected = products.filter((p) => selectedProductIds.has(p.id));
+    const withStock = selected.filter((p) => Number(p.stock ?? 0) > 0);
+    const skipped = selected.length - withStock.length;
+
+    if (withStock.length === 0) {
+      toast.error("Nenhum produto selecionado possui quantidade acima de 0.");
+      return;
+    }
+
+    let companyName = "";
+    try {
+      const { data } = await supabase
+        .from("companies")
+        .select("name")
+        .eq("id", cid)
+        .maybeSingle();
+      companyName = (data as any)?.name || "";
+    } catch {
+      companyName = "";
+    }
+
+    const rows: ProductPdfRow[] = withStock.map((p) => ({
+      name: p.name || "",
+      sku: p.sku || (p as any).alternative_code || "",
+      category: categories.find((c) => c.id === p.category_id)?.name || "",
+      brand: brands.find((b) => b.id === p.brand_id)?.name || p.brand || "",
+      stock: Number(p.stock ?? 0),
+      description: p.description || "",
+    }));
+
+    setPdfPreview({ rows, companyName, skipped });
+  };
+
+  const confirmGenerateProductPdf = () => {
+    if (!pdfPreview) return;
+    generateProductListPdf(pdfPreview.rows, {
+      companyName: pdfPreview.companyName,
+      showCategory: pdfShowCategory,
+      showBrand: pdfShowBrand,
+    });
+    toast.success(
+      pdfPreview.skipped > 0
+        ? `PDF gerado com ${pdfPreview.rows.length} produto(s). ${pdfPreview.skipped} ignorado(s) por estoque zerado.`
+        : `PDF gerado com ${pdfPreview.rows.length} produto(s).`,
+    );
+    setPdfPreview(null);
+  };
+
+
+
   const toggleSelectProduct = (id: string, checked: boolean) => {
     const next = new Set(selectedProductIds);
     if (checked) next.add(id);
@@ -1675,36 +1797,36 @@ function ProductsPage() {
           subtitle={`${totalProductsCount} cadastrado(s)`}
         />
         <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-          <div className="flex items-center gap-2 w-full sm:w-auto">
-            <ValueVisibilityToggle
-              hidden={visibility.hidden}
-              canToggle={visibility.canToggle}
-              onToggle={visibility.toggle}
-            />
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setLabelProducts(filtered);
-                setLabelOpen(true);
-              }}
-              disabled={filtered.length === 0}
-              className="flex-1 sm:flex-none border-brand-orange/20 text-brand-orange hover:bg-brand-orange/10 shrink-0"
-            >
-              <ScanBarcode className="size-4 mr-2" />
-              <span className="whitespace-nowrap">Etiquetas</span>
-            </Button>
-          </div>
+          <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
+            <div className="col-span-2 sm:col-auto flex items-center gap-2">
+              <ValueVisibilityToggle
+                hidden={visibility.hidden}
+                canToggle={visibility.canToggle}
+                onToggle={visibility.toggle}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setLabelProducts(filtered);
+                  setLabelOpen(true);
+                }}
+                disabled={filtered.length === 0}
+                className="flex-1 sm:flex-none min-w-0 border-brand-orange/20 text-brand-orange hover:bg-brand-orange/10"
+              >
+                <ScanBarcode className="size-4 mr-2 shrink-0" />
+                <span className="truncate">Etiquetas</span>
+              </Button>
+            </div>
 
-          <div className="flex items-center gap-2 w-full sm:w-auto">
             <Button
               variant="outline"
               size="sm"
               onClick={() => setAuditOpen(true)}
-              className="flex-1 sm:flex-none border-blue-500/20 text-blue-500 hover:bg-blue-500/10 shrink-0"
+              className="w-full sm:w-auto min-w-0 border-blue-500/20 text-blue-500 hover:bg-blue-500/10"
             >
-              <FileText className="size-4 mr-2" />
-              <span className="whitespace-nowrap">Auditoria</span>
+              <FileText className="size-4 mr-2 shrink-0" />
+              <span className="truncate">Auditoria</span>
             </Button>
             <Button
               variant="outline"
@@ -1712,16 +1834,101 @@ function ProductsPage() {
               disabled={selectedProductIds.size === 0}
               onClick={() => setBatchLocPickerOpen(true)}
               className={cn(
-                "flex-1 sm:flex-none border-indigo-500/20 text-indigo-500 hover:bg-indigo-500/10 shrink-0",
+                "w-full sm:w-auto min-w-0 border-indigo-500/20 text-indigo-500 hover:bg-indigo-500/10",
                 selectedProductIds.size > 0 && "bg-indigo-500/5 animate-pulse border-indigo-500/40",
               )}
             >
-              <MapPin className="size-4 mr-2" />
-              <span className="whitespace-nowrap">
+              <MapPin className="size-4 mr-2 shrink-0" />
+              <span className="truncate">
                 Transferir {selectedProductIds.size > 0 ? `(${selectedProductIds.size})` : ""}
               </span>
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={selectedProductIds.size === 0}
+              onClick={handleGenerateProductPdf}
+              className={cn(
+                "col-span-2 sm:col-auto w-full sm:w-auto min-w-0 border-emerald-500/20 text-emerald-600 hover:bg-emerald-500/10",
+                selectedProductIds.size > 0 && "bg-emerald-500/5 border-emerald-500/40",
+              )}
+            >
+              <FileText className="size-4 mr-2 shrink-0" />
+              <span className="truncate">
+                Gerar PDF {selectedProductIds.size > 0 ? `(${selectedProductIds.size})` : ""}
+              </span>
+            </Button>
           </div>
+
+
+          <Dialog open={!!pdfPreview} onOpenChange={(o) => !o && setPdfPreview(null)}>
+            <DialogContent className="w-[95vw] max-w-3xl max-h-[90vh] flex flex-col gap-0 p-0 overflow-hidden">
+              <DialogHeader className="p-4 sm:p-6 pb-3 shrink-0">
+                <DialogTitle className="flex items-center gap-2 text-base sm:text-lg">
+                  <FileText className="size-5 shrink-0" />
+                  Prévia da lista de produtos
+                </DialogTitle>
+                <DialogDescription>
+                  {pdfPreview?.rows.length ?? 0} produto(s)
+                  {pdfPreview?.skipped
+                    ? ` · ${pdfPreview.skipped} ignorado(s) por estoque zerado`
+                    : ""}
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="px-4 sm:px-6 pb-3 flex flex-wrap items-center gap-4 text-sm">
+                <span className="text-muted-foreground">Colunas no PDF:</span>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox
+                    checked={pdfShowCategory}
+                    onCheckedChange={(v) => setPdfShowCategory(!!v)}
+                  />
+                  Categoria
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox checked={pdfShowBrand} onCheckedChange={(v) => setPdfShowBrand(!!v)} />
+                  Marca
+                </label>
+              </div>
+
+              <div className="flex-1 min-h-0 overflow-auto px-4 sm:px-6 pb-4">
+                <div className="rounded-md border divide-y">
+                  {pdfPreview?.rows.map((r, i) => (
+                    <div key={i} className="p-3 space-y-1">
+                      <div className="flex items-start justify-between gap-3">
+                        <span className="font-semibold text-sm">{r.name || "-"}</span>
+                        <span className="text-sm tabular-nums shrink-0">{r.stock}</span>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {[
+                          r.sku,
+                          pdfShowCategory ? r.category : "",
+                          pdfShowBrand ? r.brand : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" · ") || "-"}
+                      </div>
+
+                      <div className="text-xs text-muted-foreground">
+                        {summarizeDescription(r.description)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <DialogFooter className="p-4 sm:p-6 pt-3 border-t shrink-0 grid grid-cols-1 sm:flex sm:justify-end gap-2">
+                <Button variant="outline" onClick={() => setPdfPreview(null)}>
+                  Cancelar
+                </Button>
+                <Button onClick={confirmGenerateProductPdf}>
+                  <FileText className="size-4 mr-2" />
+                  Gerar PDF
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
 
           <Dialog
             open={open}
@@ -1819,7 +2026,7 @@ function ProductsPage() {
                       ref={nameInputRef}
                       required
                       value={form.name}
-                      onChange={(e) => setForm({ ...form, name: e.target.value })}
+                      onChange={(e) => setForm({ ...form, name: e.target.value.toUpperCase() })}
                       className="flex-1"
                     />
                     <Button
@@ -1986,38 +2193,6 @@ function ProductsPage() {
                     </Button>
                   </div>
                 </div>
-                <div className="space-y-2">
-                  <div className="flex h-6 items-center gap-1">
-                    <Label>Código de Barras (EAN/GTIN)</Label>
-                  </div>
-                  <div className="flex gap-2">
-                    <Input
-                      value={form.barcode}
-                      onChange={(e) =>
-                        setForm({ ...form, barcode: e.target.value.replace(/\s/g, "") })
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") e.preventDefault();
-                      }}
-                      placeholder="EAN universal (opcional)"
-                      className="flex-1"
-                    />
-                    {barcodeScannerEnabled && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        onClick={() => {
-                          setScanningField("barcode");
-                          setIsScanning(true);
-                        }}
-                        title="Escanear código de barras"
-                      >
-                        <ScanBarcode className="size-4" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
                 <div className="sm:col-span-2 space-y-2 border rounded-md p-3 bg-muted/20">
                   <div className="flex items-center justify-between gap-2">
                     <div>
@@ -2173,6 +2348,76 @@ function ProductsPage() {
                   {submitAttempted && form.categoryId === "none" && (
                     <p className="text-xs text-destructive">Selecione uma categoria</p>
                   )}
+                </div>
+                <div className="space-y-2">
+                  <Label className="flex items-center gap-1">
+                    NCM <span className="text-destructive">*</span>
+                    <NcmInfoButton />
+                  </Label>
+                  <div className="flex gap-1">
+                    <Input
+                      value={form.ncm}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          ncm: e.target.value.replace(/\D/g, "").slice(0, 8),
+                        })
+                      }
+                      placeholder="00000000"
+                      inputMode="numeric"
+                      maxLength={8}
+                      required
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      title="Atualizar NCM pela categoria selecionada"
+                      disabled={
+                        prodNcmLookupBusy ||
+                        !form.categoryId ||
+                        form.categoryId === "none"
+                      }
+                      onClick={async () => {
+                        const cat = categories.find((c) => c.id === form.categoryId);
+                        if (!cat) return;
+                        setProdNcmLookupBusy(true);
+                        try {
+                          const r = await lookupNcm({
+                            data: { categoryName: cat.name, companyId: cid },
+                          });
+                          if (r.found && r.ncm) {
+                            setForm((f) => ({ ...f, ncm: r.ncm! }));
+                            toast.success(`NCM encontrado: ${r.ncm}`, {
+                              description: r.description ?? "Confira se confere com o produto.",
+                            });
+                          } else {
+                            toast.warning("NCM não encontrado", {
+                              description:
+                                r.reason ??
+                                "Cadastre o NCM diretamente na categoria ou informe manualmente.",
+                            });
+                          }
+                        } catch (err) {
+                          toast.error(err instanceof Error ? err.message : "Falha na consulta.");
+                        } finally {
+                          setProdNcmLookupBusy(false);
+                        }
+                      }}
+
+                    >
+                      {prodNcmLookupBusy ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <Sparkles className="size-4" />
+                      )}
+                    </Button>
+                  </div>
+                  {submitAttempted &&
+                    (form.ncm.replace(/\D/g, "").length !== 8 ||
+                      form.ncm.replace(/\D/g, "") === "00000000") && (
+                      <p className="text-xs text-destructive">Informe um NCM válido (8 dígitos)</p>
+                    )}
                 </div>
                 <div className="space-y-2">
                   <Label>Fornecedor</Label>
@@ -2415,7 +2660,7 @@ function ProductsPage() {
                                   const pathParts = url.pathname.split("/product-images/");
                                   if (pathParts.length > 1) {
                                     const filePath = decodeURIComponent(pathParts[1]);
-                                    await appwrite.storage
+                                    await supabase.storage
                                       .from("product-images")
                                       .remove([filePath]);
                                   }
@@ -2478,7 +2723,7 @@ function ProductsPage() {
                                     try {
                                       if (!blob) throw new Error("Falha ao gerar blob da imagem");
                                       const fileName = `${cid}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, "_")}`;
-                                      const { data, error } = await appwrite.storage
+                                      const { data, error } = await supabase.storage
                                         .from("product-images")
                                         .upload(fileName, blob, {
                                           contentType: "image/jpeg",
@@ -2490,7 +2735,7 @@ function ProductsPage() {
 
                                       const {
                                         data: { publicUrl },
-                                      } = appwrite.storage
+                                      } = supabase.storage
                                         .from("product-images")
                                         .getPublicUrl(data.path);
 
@@ -2573,9 +2818,33 @@ function ProductsPage() {
             <DialogTitle>Nova categoria</DialogTitle>
           </DialogHeader>
           <form
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              if (!catName.trim()) return;
+              const trimmed = catName.trim();
+              if (!trimmed) return;
+              if (catNcm.trim().length !== 8) {
+                toast.error("Informe o NCM (8 dígitos). Use 'Buscar NCM' se não souber.");
+                return;
+              }
+              const target = normalizeName(trimmed);
+              const exact = categories.find((c) => normalizeName(c.name) === target);
+              if (exact) {
+                toast.error(duplicateMessage("categoria"));
+                return;
+              }
+              const sim = findSimilarNames(trimmed, categories);
+              if (sim.length > 0) {
+                const ok = await confirm({
+                  title: "Possível duplicidade",
+                  description: `Já existe(m): ${sim
+                    .slice(0, 3)
+                    .map((s) => `"${s.name}"`)
+                    .join(", ")}. Cadastrar mesmo assim?`,
+                  confirmLabel: "Cadastrar",
+                  variant: "default",
+                });
+                if (!ok) return;
+              }
               createCatMut.mutate();
             }}
             className="space-y-4"
@@ -2588,6 +2857,71 @@ function ProductsPage() {
                 onChange={(e) => setCatName(e.target.value.toUpperCase())}
                 required
               />
+              {catName.trim() && findSimilarNames(catName, categories).length > 0 && (
+                <p className="text-xs text-amber-600 dark:text-amber-500">
+                  Semelhante a:{" "}
+                  {findSimilarNames(catName, categories)
+                    .slice(0, 3)
+                    .map((s) => s.name)
+                    .join(", ")}
+                </p>
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label className="flex items-center gap-1">
+                NCM <span className="text-destructive">*</span>
+                <NcmInfoButton />
+              </Label>
+              <div className="flex gap-1">
+                <Input
+                  value={catNcm}
+                  onChange={(e) =>
+                    setCatNcm(e.target.value.replace(/\D/g, "").slice(0, 8))
+                  }
+                  placeholder="00000000"
+                  inputMode="numeric"
+                  maxLength={8}
+                  required
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  title="Buscar NCM por IA"
+                  disabled={catNcmLookupBusy || !catName.trim()}
+                  onClick={async () => {
+                    setCatNcmLookupBusy(true);
+                    try {
+                      const r = await lookupNcm({ data: { categoryName: catName.trim(), companyId: cid } });
+                      if (r.found && r.ncm) {
+                        setCatNcm(r.ncm);
+                        toast.success(`NCM encontrado: ${r.ncm}`, {
+                          description: r.description ?? "Confira se confere com o produto.",
+                        });
+                      } else {
+                        toast.warning("NCM não encontrado", {
+                          description:
+                            r.reason ??
+                            "Revise o nome da categoria (seja mais específico) ou informe o NCM manualmente.",
+                        });
+                      }
+                    } catch (err) {
+                      toast.error(err instanceof Error ? err.message : "Falha na consulta.");
+                    } finally {
+                      setCatNcmLookupBusy(false);
+                    }
+                  }}
+                >
+                  {catNcmLookupBusy ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="size-4" />
+                  )}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Será usado como padrão ao cadastrar produtos desta categoria.
+              </p>
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setCatOpen(false)}>
@@ -2734,8 +3068,11 @@ function ProductsPage() {
               placeholder="Buscar produto ou código…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 h-10 text-sm"
+              className="pl-9 pr-10 h-10 text-sm"
             />
+            {(productsQ.isFetching || search !== debouncedSearch) && (
+              <Loader2 className="size-4 absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground animate-spin" />
+            )}
           </div>
 
           <div className="grid grid-cols-2 sm:flex sm:flex-row gap-2 sm:gap-3">
@@ -2764,6 +3101,17 @@ function ProductsPage() {
                     {loc.name.toUpperCase()}
                   </SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={ncmFilter} onValueChange={(v: any) => setNcmFilter(v)}>
+              <SelectTrigger className="h-10 text-xs sm:text-sm sm:w-[180px]">
+                <SelectValue placeholder="NCM" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todos (NCM)</SelectItem>
+                <SelectItem value="with">Com NCM cadastrado</SelectItem>
+                <SelectItem value="without">Sem NCM</SelectItem>
               </SelectContent>
             </Select>
 
@@ -2803,6 +3151,10 @@ function ProductsPage() {
                   <SelectItem value="25">25</SelectItem>
                   <SelectItem value="50">50</SelectItem>
                   <SelectItem value="100">100</SelectItem>
+                  <SelectItem value="200">200</SelectItem>
+                  <SelectItem value="300">300</SelectItem>
+                  <SelectItem value="400">400</SelectItem>
+                  <SelectItem value="500">500</SelectItem>
                 </SelectContent>
               </Select>
               <PrintButton
@@ -3305,10 +3657,19 @@ function ProductsPage() {
           )}
         </div>
         <div className="mt-4 border-t pt-4 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="text-sm text-muted-foreground order-2 sm:order-1">
-            Exibindo {products.length} de {totalProductsCount} produtos
+          <div className="text-sm text-muted-foreground order-2 sm:order-1 flex items-center gap-2">
+            {(productsQ.isFetching || search !== debouncedSearch) ? (
+              <>
+                <Loader2 className="size-3 animate-spin" />
+                <span>Buscando...</span>
+              </>
+            ) : paginated.length === 0 ? (
+              <span>Nenhum produto encontrado</span>
+            ) : (
+              <span>Exibindo {paginated.length} de {totalProductsCount} produtos</span>
+            )}
           </div>
-          {totalPages > 1 && (
+          {totalPages > 1 && paginated.length > 0 && !(productsQ.isFetching || search !== debouncedSearch) && (
             <div className="order-1 sm:order-2">
               <SmartPagination
                 currentPage={currentPage}
@@ -3317,6 +3678,7 @@ function ProductsPage() {
               />
             </div>
           )}
+
         </div>
       </Card>
 
@@ -3349,8 +3711,6 @@ function ProductsPage() {
 
             if (scanningField === "sku") {
               setForm((f) => ({ ...f, sku: cleanCode }));
-            } else if (scanningField === "barcode") {
-              setForm((f) => ({ ...f, barcode: cleanCode }));
             } else {
               setForm((f) => ({ ...f, alternativeCode: cleanCode }));
             }
@@ -3545,7 +3905,40 @@ function ProductsPage() {
         title="Selecionar categoria"
         items={categories}
         selectedId={form.categoryId === "none" ? null : form.categoryId}
-        onSelect={(id) => setForm({ ...form, categoryId: id })}
+        onSelect={async (id) => {
+          const cat = categories.find((c) => c.id === id);
+          const catNcm = (cat?.ncm || "").trim();
+          const defaultNcm = ((companySettingsQ.data as any)?.default_ncm || "").toString().trim();
+          const currentNcm = form.ncm.trim();
+          if (!catNcm) {
+            // Categoria sem NCM: usa o NCM padrão da empresa, se configurado
+            if (defaultNcm) {
+              setForm({ ...form, categoryId: id, ncm: defaultNcm });
+              toast.info("NCM padrão aplicado", {
+                description: `Categoria sem NCM. Usado NCM padrão da empresa: ${defaultNcm}.`,
+              });
+            } else {
+              toast.warning("Categoria sem NCM cadastrado", {
+                description: `Informe o NCM manualmente ou cadastre um NCM padrão em Configurações.`,
+              });
+              setForm({ ...form, categoryId: id, ncm: currentNcm });
+            }
+            return;
+          }
+          if (currentNcm && currentNcm !== catNcm) {
+            const ok = await confirm({
+              title: "Substituir NCM informado?",
+              description: `Você digitou o NCM ${currentNcm}, mas a categoria "${cat?.name ?? ""}" usa ${catNcm}. Deseja substituir pelo NCM da categoria?`,
+              confirmLabel: "Substituir",
+              cancelLabel: "Manter o meu",
+              variant: "default",
+            });
+            setForm({ ...form, categoryId: id, ncm: ok ? catNcm : currentNcm });
+            return;
+          }
+          setForm({ ...form, categoryId: id, ncm: catNcm });
+        }}
+
         onCreateNew={() => setCatOpen(true)}
         emptyMessage="Nenhuma categoria cadastrada"
       />
@@ -3781,14 +4174,6 @@ function ProductsPage() {
                     </div>
                   )}
                 </div>
-                {aiLookupResult.barcode && (
-                  <div className="rounded-md border bg-muted/30 p-2">
-                    <Label className="text-xs uppercase tracking-wide text-muted-foreground">
-                      Código de Barras (EAN/GTIN)
-                    </Label>
-                    <p className="font-mono text-sm mt-1">{aiLookupResult.barcode}</p>
-                  </div>
-                )}
                 {aiLookupResult.existingProduct && (
                   <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 space-y-2">
                     <p className="text-sm">
@@ -3995,7 +4380,7 @@ function ProductsPage() {
                 placeholder={
                   quickSearchType === "sku"
                     ? "Digite o código do fabricante..."
-                    : "Pesquise por nome, SKU, barcode ou qualquer campo..."
+                    : "Pesquise por nome, SKU ou qualquer campo..."
                 }
                 value={quickSearchTerm}
                 onChange={(e) => handleQuickSearch(e.target.value, quickSearchType)}
@@ -4499,12 +4884,6 @@ function ProductsPage() {
                       SKU / Código
                     </h3>
                     <p className="font-mono text-sm">{detailsProduct.sku || "—"}</p>
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-medium text-muted-foreground uppercase text-[10px]">
-                      Cód. Barras
-                    </h3>
-                    <p className="font-mono text-sm">{detailsProduct.barcode || "—"}</p>
                   </div>
                 </div>
               </div>

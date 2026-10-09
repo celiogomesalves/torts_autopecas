@@ -1,3 +1,4 @@
+import { makePrefetchLoader } from "@/lib/route-prefetch";
 import { PageHeading } from "@/components/page-header";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
@@ -35,6 +36,7 @@ import { SearchInput } from "@/components/search-input";
 import { matchSearch } from "@/lib/utils";
 
 export const Route = createFileRoute("/app/localizacoes")({
+  loader: makePrefetchLoader(["locations"]),
   component: LocalizacoesPage,
 });
 

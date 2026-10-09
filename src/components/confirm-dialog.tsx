@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 
 export interface ConfirmOptions {
   title?: string;
-  description?: string;
+  description?: ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   /** "destructive" usa o estilo do botão de exclusão (vermelho da marca). */
@@ -78,7 +78,9 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{pending?.title}</AlertDialogTitle>
-            <AlertDialogDescription>{pending?.description}</AlertDialogDescription>
+            <AlertDialogDescription asChild>
+              <div>{pending?.description}</div>
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={submitting} onClick={() => close(false)}>

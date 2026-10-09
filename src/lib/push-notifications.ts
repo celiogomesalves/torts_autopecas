@@ -1,4 +1,4 @@
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 
 function urlBase64ToUint8Array(base64String: string) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -74,19 +74,19 @@ export async function registerPushNotifications(userId: string): Promise<boolean
       throw new Error("Assinatura inválida retornada pelo navegador.");
     }
 
-    // Cast para any para evitar erros de compilação do TypeScript antes da regeneração dos types do Appwrite
-    const appwriteAny = appwrite as any;
+    // Cast para any para evitar erros de compilação do TypeScript antes da regeneração dos types do Supabase
+    const supabaseAny = supabase as any;
 
     // Verificar se já existe a inscrição ativa
-    const { data: existing } = await appwriteAny
+    const { data: existing } = await supabaseAny
       .from("push_subscriptions")
       .select("id")
       .eq("endpoint", endpoint)
       .maybeSingle();
 
     if (!existing) {
-      // Salvar nova inscrição no banco do Appwrite
-      const { error } = await appwriteAny.from("push_subscriptions").insert({
+      // Salvar nova inscrição no banco do Supabase
+      const { error } = await supabaseAny.from("push_subscriptions").insert({
         user_id: userId,
         endpoint,
         p256dh,
@@ -116,9 +116,9 @@ export async function unsubscribePushNotifications(): Promise<boolean> {
       const endpoint = subscription.endpoint;
       await subscription.unsubscribe();
 
-      const appwriteAny = appwrite as any;
-      // Remover do banco de dados do Appwrite
-      await appwriteAny.from("push_subscriptions").delete().eq("endpoint", endpoint);
+      const supabaseAny = supabase as any;
+      // Remover do banco de dados do Supabase
+      await supabaseAny.from("push_subscriptions").delete().eq("endpoint", endpoint);
 
       return true;
     }

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 
 const DEFAULT_NAME = "AutoPeças";
 
@@ -8,7 +8,7 @@ export function useBranding() {
     queryKey: ["branding"],
     staleTime: 60 * 60 * 1000, // 1 hora: branding muda raramente
     queryFn: async () => {
-      const { data } = await appwrite
+      const { data } = await supabase
         .from("system_settings" as any)
         .select("brand_name, brand_logo_url")
         .maybeSingle();

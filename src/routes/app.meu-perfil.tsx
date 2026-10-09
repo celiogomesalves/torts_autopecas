@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -99,7 +99,7 @@ function MyProfilePage() {
   useEffect(() => {
     if (!user) return;
     (async () => {
-      const { data, error } = await (appwrite.from("profiles") as any)
+      const { data, error } = await (supabase.from("profiles") as any)
         .select("name, phone, address")
         .eq("id", user.id)
         .maybeSingle();
@@ -122,7 +122,7 @@ function MyProfilePage() {
       return;
     }
     setSavingProfile(true);
-    const { error } = await (appwrite.from("profiles") as any)
+    const { error } = await (supabase.from("profiles") as any)
       .update({ name: name.trim(), phone: phone.trim() || null, address: address.trim() || null })
       .eq("id", user.id);
     setSavingProfile(false);
@@ -144,7 +144,7 @@ function MyProfilePage() {
       return;
     }
     setSavingPassword(true);
-    const { error } = await appwrite.auth.updateUser({ password: pw1 });
+    const { error } = await supabase.auth.updateUser({ password: pw1 });
     setSavingPassword(false);
     if (error) {
       toast.error("Erro ao alterar senha", { description: error.message });

@@ -1,3 +1,4 @@
+import { makePrefetchLoader } from "@/lib/route-prefetch";
 import { PageHeading } from "@/components/page-header";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
@@ -34,6 +35,7 @@ import { PrintButton } from "@/components/print-button";
 import { printList } from "@/lib/print-list";
 
 export const Route = createFileRoute("/app/conciliacao")({
+  loader: makePrefetchLoader(["bankTransactions"]),
   component: ConciliacaoPage,
 });
 

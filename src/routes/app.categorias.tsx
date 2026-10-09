@@ -1,7 +1,9 @@
+import { makePrefetchLoader } from "@/lib/route-prefetch";
 import { PageHeading } from "@/components/page-header";
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import { useAuth } from "@/lib/auth-context";
 import {
   fetchCategories,
@@ -10,11 +12,15 @@ import {
   updateCategory,
   deleteCategory,
 } from "@/lib/db";
+import { lookupNcmByCategory } from "@/lib/ncm-lookup.functions";
+import { NcmInfoButton } from "@/components/ncm-info-button";
+import { findSimilarNames, normalizeName } from "@/lib/string-similarity";
+import { useConfirm } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
-import { Plus, Trash2, Tags, Pencil, Check, X } from "lucide-react";
+import { Plus, Trash2, Tags, Pencil, Check, X, Sparkles, Loader2 } from "lucide-react";
 import { SmartPagination } from "@/components/smart-pagination";
 import {
   AlertDialog,
@@ -34,10 +40,11 @@ import { SearchInput } from "@/components/search-input";
 import { matchSearch, isDuplicateError, duplicateMessage } from "@/lib/utils";
 
 export const Route = createFileRoute("/app/categorias")({
+  loader: makePrefetchLoader(["categories"]),
   component: CategoriesPage,
 });
 
-type Category = { id: string; name: string };
+type Category = { id: string; name: string; ncm: string | null };
 
 function CategoriesPage() {
   const { currentCompanyId } = useAuth();
@@ -56,15 +63,21 @@ function CategoriesPage() {
   });
 
   const [name, setName] = useState("");
+  const [ncm, setNcm] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  const [editingNcm, setEditingNcm] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Category | null>(null);
+  const [lookupBusy, setLookupBusy] = useState<"new" | "edit" | null>(null);
+  const lookupNcm = useServerFn(lookupNcmByCategory);
+  const confirm = useConfirm();
 
   const addMut = useMutation({
-    mutationFn: () => createCategory(cid, name.trim()),
+    mutationFn: () => createCategory(cid, name.trim(), undefined, undefined, ncm.trim() || null),
     onSuccess: () => {
       toast.success("Sucesso! Categoria criada.");
       setName("");
+      setNcm("");
       qc.invalidateQueries({ queryKey: ["categories", cid] });
     },
     onError: (e: any) => {
@@ -74,11 +87,13 @@ function CategoriesPage() {
   });
 
   const updateMut = useMutation({
-    mutationFn: ({ id, name }: { id: string; name: string }) => updateCategory(id, name),
+    mutationFn: ({ id, name, ncm }: { id: string; name: string; ncm: string | null }) =>
+      updateCategory(id, name, undefined, ncm),
     onSuccess: () => {
       toast.success("Sucesso! Categoria atualizada.");
       setEditingId(null);
       setEditingName("");
+      setEditingNcm("");
       qc.invalidateQueries({ queryKey: ["categories", cid] });
       qc.invalidateQueries({ queryKey: ["products", cid] });
     },
@@ -135,20 +150,113 @@ function CategoriesPage() {
   const startEdit = (c: Category) => {
     setEditingId(c.id);
     setEditingName(c.name);
+    setEditingNcm(c.ncm || "");
   };
 
   const cancelEdit = () => {
     setEditingId(null);
     setEditingName("");
+    setEditingNcm("");
   };
 
-  const saveEdit = (id: string) => {
+  const saveEdit = async (id: string) => {
     const trimmed = editingName.trim();
     if (!trimmed) {
       toast.error("O nome não pode ficar vazio.");
       return;
     }
-    updateMut.mutate({ id, name: trimmed });
+    const ncmTrim = editingNcm.trim();
+    if (ncmTrim.length !== 8) {
+      toast.error("Informe o NCM (8 dígitos). Use 'Buscar NCM' se não souber.");
+      return;
+    }
+    if (isExactDuplicate(trimmed, id)) {
+      toast.error(duplicateMessage("categoria"));
+      return;
+    }
+    const sim = findSimilarNames(trimmed, categories, { excludeId: id });
+    if (sim.length > 0) {
+      const ok = await confirm({
+        title: "Possível duplicidade",
+        description: `Existem categorias parecidas: ${sim
+          .slice(0, 3)
+          .map((s) => `"${s.name}"`)
+          .join(", ")}. Salvar mesmo assim?`,
+        confirmLabel: "Salvar",
+        variant: "default",
+      });
+      if (!ok) return;
+    }
+    updateMut.mutate({ id, name: trimmed, ncm: ncmTrim });
+  };
+
+  // Categorias com nome idêntico (após normalização) — usado para bloquear duplicidade.
+  const isExactDuplicate = (n: string, ignoreId?: string | null) => {
+    const target = normalizeName(n);
+    return categories.some((c) => c.id !== ignoreId && normalizeName(c.name) === target);
+  };
+
+  const similarNew = useMemo(
+    () => (name.trim() ? findSimilarNames(name, categories) : []),
+    [name, categories],
+  );
+
+  const handleAdd = async () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (ncm.trim().length !== 8) {
+      toast.error("Informe o NCM (8 dígitos). Use 'Buscar NCM' se não souber.");
+      return;
+    }
+    if (isExactDuplicate(trimmed)) {
+      toast.error(duplicateMessage("categoria"));
+      return;
+    }
+    if (similarNew.length > 0) {
+      const ok = await confirm({
+        title: "Possível duplicidade",
+        description: `Já existe(m) categoria(s) parecida(s): ${similarNew
+          .slice(0, 3)
+          .map((s) => `"${s.name}"`)
+          .join(", ")}. Deseja cadastrar mesmo assim?`,
+        confirmLabel: "Cadastrar",
+        variant: "default",
+      });
+      if (!ok) return;
+    }
+    addMut.mutate();
+  };
+
+  const handleLookup = async (
+    target: "new" | "edit",
+    catName: string,
+    setNcmFn: (v: string) => void,
+  ) => {
+    const trimmed = catName.trim();
+    if (!trimmed) {
+      toast.error("Informe o nome da categoria primeiro.");
+      return;
+    }
+    setLookupBusy(target);
+    try {
+      const r = await lookupNcm({ data: { categoryName: trimmed, companyId: cid } });
+      if (r.found && r.ncm) {
+        setNcmFn(r.ncm);
+        toast.success(`NCM encontrado: ${r.ncm}`, {
+          description: r.description ?? "Confira se confere com o produto.",
+        });
+      } else {
+        toast.warning("NCM não encontrado", {
+          description:
+            r.reason ??
+            "Revise o nome da categoria (seja mais específico) ou informe o NCM manualmente.",
+        });
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Falha na consulta de NCM.");
+    } finally {
+      setLookupBusy(null);
+    }
   };
 
   const requestDelete = (c: Category) => {
@@ -165,7 +273,7 @@ function CategoriesPage() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <PageHeading icon={Tags} title="Categorias" subtitle="Organize seus produtos por tipo" />
+        <PageHeading icon={Tags} title="Categorias" subtitle={`${filtered.length} cadastrado(s)`} />
         <PrintButton onClick={handlePrint} disabled={categories.length === 0} />
       </div>
 
@@ -173,9 +281,9 @@ function CategoriesPage() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (name.trim()) addMut.mutate();
+            handleAdd();
           }}
-          className="grid gap-3 sm:grid-cols-[1fr_auto] items-end"
+          className="grid gap-3 sm:grid-cols-[1fr_220px_auto] items-end"
         >
           <div className="space-y-2">
             <Label>Nova categoria</Label>
@@ -185,6 +293,45 @@ function CategoriesPage() {
               placeholder="Ex: FILTROS"
               required
             />
+            {similarNew.length > 0 && (
+              <p className="text-xs text-amber-600 dark:text-amber-500">
+                Semelhante a:{" "}
+                {similarNew
+                  .slice(0, 3)
+                  .map((s) => s.name)
+                  .join(", ")}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <Label className="flex items-center gap-1">
+              NCM <span className="text-destructive">*</span>
+              <NcmInfoButton />
+            </Label>
+            <div className="flex gap-1">
+              <Input
+                value={ncm}
+                onChange={(e) => setNcm(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                placeholder="00000000"
+                inputMode="numeric"
+                maxLength={8}
+                required
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                title="Buscar NCM por IA"
+                disabled={lookupBusy === "new" || !name.trim()}
+                onClick={() => handleLookup("new", name, setNcm)}
+              >
+                {lookupBusy === "new" ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Sparkles className="size-4" />
+                )}
+              </Button>
+            </div>
           </div>
           <Button
             type="submit"
@@ -226,21 +373,62 @@ function CategoriesPage() {
                 <div className="flex-1 min-w-0">
                   <div className="text-xs text-muted-foreground mb-0.5">Descrição</div>
                   {isEditing ? (
-                    <Input
-                      value={editingName}
-                      onChange={(e) => setEditingName(e.target.value.toUpperCase())}
-                      required
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") saveEdit(c.id);
-                        if (e.key === "Escape") cancelEdit();
-                      }}
-                      autoFocus
-                      className="h-8"
-                    />
+                    <div className="space-y-2">
+                      <Input
+                        value={editingName}
+                        onChange={(e) => setEditingName(e.target.value.toUpperCase())}
+                        required
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") saveEdit(c.id);
+                          if (e.key === "Escape") cancelEdit();
+                        }}
+                        autoFocus
+                        className="h-8"
+                      />
+                      <div className="flex gap-1">
+                        <Input
+                          value={editingNcm}
+                          onChange={(e) =>
+                            setEditingNcm(e.target.value.replace(/\D/g, "").slice(0, 8))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") saveEdit(c.id);
+                            if (e.key === "Escape") cancelEdit();
+                          }}
+                          placeholder="NCM (obrigatório)"
+                          inputMode="numeric"
+                          maxLength={8}
+                          className="h-8"
+                          required
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          title="Buscar NCM por IA"
+                          disabled={lookupBusy === "edit" || !editingName.trim()}
+                          onClick={() => handleLookup("edit", editingName, setEditingNcm)}
+                        >
+                          {lookupBusy === "edit" ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <Sparkles className="size-3.5" />
+                          )}
+                        </Button>
+                      </div>
+                    </div>
                   ) : (
                     <>
                       <div className="font-medium truncate">{c.name.toUpperCase()}</div>
-                      <div className="text-xs text-muted-foreground">{count} produto(s)</div>
+                      <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
+                        <span>{count} produto(s)</span>
+                        {c.ncm && (
+                          <span className="inline-flex items-center rounded-sm bg-brand-green/10 text-brand-green px-1.5 py-0.5 text-[10px] font-medium tracking-wide">
+                            NCM {c.ncm}
+                          </span>
+                        )}
+                      </div>
                     </>
                   )}
                 </div>

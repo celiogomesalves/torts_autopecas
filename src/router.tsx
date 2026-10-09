@@ -2,8 +2,36 @@ import { createRouter, useRouter } from "@tanstack/react-router";
 import { QueryClient } from "@tanstack/react-query";
 import { routeTree } from "./routeTree.gen";
 
-function DefaultErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
+const CHUNK_RELOAD_KEY = "__chunk_reload_attempt__";
+
+function isChunkLoadError(error: Error) {
+  const msg = `${error?.name ?? ""} ${error?.message ?? ""}`;
+  return (
+    /ChunkLoadError|Loading chunk [\d]+ failed|Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/i.test(
+      msg,
+    )
+  );
+}
+
+function DefaultErrorComponent(props: import("@tanstack/react-router").ErrorComponentProps) {
+  const error = props.error as Error;
+  const reset = props.reset;
   const router = useRouter();
+
+  // Auto-reload uma única vez em erro de chunk (típico após deploy novo)
+  if (typeof window !== "undefined" && isChunkLoadError(error)) {
+    try {
+      const already = sessionStorage.getItem(CHUNK_RELOAD_KEY);
+      if (!already) {
+        sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now()));
+        window.location.reload();
+        return null;
+      }
+    } catch {
+      // sessionStorage indisponível — segue exibindo a tela de erro
+    }
+  }
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="max-w-md text-center">
@@ -12,6 +40,11 @@ function DefaultErrorComponent({ error, reset }: { error: Error; reset: () => vo
         <div className="mt-6 flex items-center justify-center gap-3">
           <button
             onClick={() => {
+              try {
+                sessionStorage.removeItem(CHUNK_RELOAD_KEY);
+              } catch {
+                /* ignore */
+              }
               router.invalidate();
               reset();
             }}
@@ -31,6 +64,7 @@ function DefaultErrorComponent({ error, reset }: { error: Error; reset: () => vo
   );
 }
 
+
 export const getRouter = () => {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -47,9 +81,13 @@ export const getRouter = () => {
     routeTree,
     context: { queryClient },
     scrollRestoration: true,
-    defaultPreload: "intent",
-    defaultPreloadDelay: 50,
-    defaultPreloadStaleTime: 0,
+    // viewport: pré-carrega o chunk JS de cada rota assim que o <Link> aparece
+    // na tela (ex.: itens do menu lateral), eliminando o atraso na 1ª navegação.
+    defaultPreload: "viewport",
+    defaultPreloadDelay: 0,
+    // Mantém o cache do preload por 30s para que a navegação seguinte use o chunk já baixado
+    defaultPreloadStaleTime: 30_000,
+    defaultPreloadGcTime: 5 * 60_000,
     defaultErrorComponent: DefaultErrorComponent,
   });
   return router;

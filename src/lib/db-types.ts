@@ -1,4 +1,4 @@
-// Tipos manuais que espelham o schema Appwrite.
+// Tipos manuais que espelham o schema Supabase.
 // Substituir pelos tipos gerados (Database) após a migração ser aplicada.
 
 export type Role = "admin" | "gerente" | "vendedor" | "estoquista";
@@ -83,6 +83,7 @@ export interface Category {
   company_id: string;
   name: string;
   description: string | null;
+  ncm: string | null;
   created_at: string;
 }
 
@@ -102,7 +103,7 @@ export interface Product {
   location_id: string | null;
   sku: string;
   alternative_code: string | null;
-  barcode: string | null;
+  
   name: string;
   brand: string | null;
   description: string | null;
@@ -116,6 +117,7 @@ export interface Product {
   created_at: string;
   updated_at: string;
   image_url?: string | null;
+  ncm?: string | null;
   created_by?: string | null;
   updated_by?: string | null;
   // Join fields
@@ -282,8 +284,32 @@ export interface PaymentMethod {
   name: string;
   requires_due_date: boolean;
   active: boolean;
+  auto_issue_nfce?: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface SalePayment {
+  id: string;
+  sale_id: string;
+  company_id: string;
+  payment_method_id: string | null;
+  method: string;
+  amount: number;
+  installments: number;
+  first_due_date: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SalePaymentInput {
+  payment_method_id?: string | null;
+  method: string;
+  amount: number;
+  installments?: number;
+  first_due_date?: string | null;
+  notes?: string | null;
 }
 
 // ---------- Delivery ----------
@@ -385,4 +411,41 @@ export interface FiscalNote {
   ambiente: string | null;
   notes: string | null;
   emitted_at: string;
+}
+
+export interface Quotation {
+  id: string;
+  company_id: string;
+  customer_id: string | null;
+  customer_name: string | null;
+  number: number;
+  status: "rascunho" | "enviado" | "aprovado" | "cancelado";
+  subtotal: number;
+  discount: number;
+  total: number;
+  notes: string | null;
+  items: any[]; // Array of QuotationItem
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserTask {
+  id: string;
+  company_id: string;
+  user_id: string;
+  title: string;
+  description: string | null;
+  due_at: string;
+  reminder_at: string | null;
+  status: "pending" | "completed" | "cancelled";
+  created_at: string;
+  updated_at: string;
+  recurrence_type: "none" | "daily" | "weekly" | "monthly";
+  recurrence_parent_id: string | null;
+  recurrence_end_at: string | null;
+  profile?: {
+    name: string | null;
+    email: string | null;
+  };
 }

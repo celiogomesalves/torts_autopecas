@@ -1,4 +1,4 @@
-import { appwrite as db } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 import type {
   Company,
   Membership,
@@ -26,6 +26,8 @@ import type {
   NfType,
   NfStatus,
   PaymentMethod,
+  SalePayment,
+  SalePaymentInput,
   StockCount,
   StockCountItem,
   PartnerAddress,
@@ -33,7 +35,34 @@ import type {
   StockCountTeamLocation,
 } from "./db-types";
 
+const db = supabase as any;
+
 const SELECT_WITH_PROFILE = "*, profiles(name)";
+export const COMPANY_SAFE_SELECT =
+  "id,name,cnpj,created_by,created_at,approved,approved_at,approved_by,rejected_at,rejection_reason,delivery_enabled,pickup_enabled,phone,zip_code";
+
+function normalizeNcm(value?: string | null) {
+  return String(value ?? "").replace(/\D/g, "");
+}
+
+function normalizeProductSearchQuery(value: unknown) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/['’‘`´"”“]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeRequiredNcm(value?: string | null) {
+  const ncm = normalizeNcm(value);
+  if (ncm.length !== 8 || ncm === "00000000") {
+    throw new Error("O NCM é obrigatório e deve ter 8 dígitos válidos");
+  }
+  return ncm;
+}
 
 /**
  * Registra uma atividade no log de auditoria
@@ -52,7 +81,7 @@ export async function logActivity(params: {
     action: params.action,
     entity: params.entity,
     entity_id: params.entityId,
-    meta: params.meta
+    meta: params.meta,
   });
   if (error) {
     console.error("Erro ao registrar log de atividade:", error);
@@ -201,51 +230,36 @@ export async function fetchMyCompanies(userIdOrContext?: string | any): Promise<
   }
 
   if (!finalUserId) {
-    const { data } = await appwrite.auth.getUser();
-    finalUserId = data?.user?.id;
-  }
-  if (!finalUserId) {
-    const { data: sessionData } = await appwrite.auth.getSession();
-    finalUserId = sessionData?.session?.user?.id;
+    const { data: { user } } = await supabase.auth.getUser();
+    finalUserId = user?.id;
   }
   if (!finalUserId) return [];
 
-  // 1. Busca os memberships do usuário
-  const { data: memberships, error: mError } = await db
+  const { data, error } = await db
     .from("memberships")
-    .select("*")
+    .select(`is_blocked, role, company:companies(${COMPANY_SAFE_SELECT})`)
     .eq("user_id", finalUserId);
 
-  if (mError) throw mError;
-  if (!memberships || memberships.length === 0) return [];
+  if (error) throw error;
 
-  // 2. Extrai os IDs das empresas
-  const companyIds = memberships
-    .map((m: any) => m.company_id)
-    .filter(Boolean);
+  return (data ?? []).map((m: any) => ({
+    ...m.company,
+    is_blocked: m.is_blocked,
+    role: m.role
+  }));
+}
 
-  if (companyIds.length === 0) return [];
-
-  // 3. Busca os registros completos das empresas
-  const { data: companies, error: cError } = await db
-    .from("companies")
-    .select("*")
-    .in("id", companyIds);
-
-  if (cError) throw cError;
-
-  const companyMap = new Map((companies ?? []).map((c: any) => [c.id || c.$id, c]));
-
-  return memberships.map((m: any) => {
-    const company = companyMap.get(m.company_id) || {};
-    return {
-      ...company,
-      id: company.id || company.$id || m.company_id,
-      name: company.name || "Empresa",
-      is_blocked: m.is_blocked ?? false,
-      role: m.role || "vendedor",
-    };
-  });
+export async function fetchMyCompanyRole(companyId: string): Promise<string | null> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+  const { data, error } = await db
+    .from("memberships")
+    .select("role")
+    .eq("company_id", companyId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.role as string | undefined) ?? null;
 }
 
 export async function toggleMemberBlocked(membershipId: string, blocked: boolean): Promise<void> {
@@ -276,7 +290,7 @@ export async function toggleMemberBlocked(membershipId: string, blocked: boolean
 
 
 export async function fetchCompany(id: string): Promise<Company | null> {
-  const { data, error } = await db.from("companies").select("*").eq("id", id).maybeSingle();
+  const { data, error } = await db.from("companies").select(COMPANY_SAFE_SELECT).eq("id", id).maybeSingle();
   if (error) throw error;
   return (data ?? null) as Company | null;
 }
@@ -291,7 +305,7 @@ export async function createCompany(input: {
       name: input.name,
       cnpj: input.cnpj || null,
     })
-    .select("*")
+    .select(COMPANY_SAFE_SELECT)
     .single();
   if (error) throw error;
   return data as Company;
@@ -407,20 +421,20 @@ export async function fetchCategories(companyId: string): Promise<Category[]> {
   return allData as Category[];
 }
 
-export async function createCategory(companyId: string, name: string, description?: string, userId?: string) {
+export async function createCategory(companyId: string, name: string, description?: string, userId?: string, ncm?: string | null) {
   const { data, error } = await db
     .from("categories")
-    .insert({ company_id: companyId, name: name.toUpperCase().trim(), description: description || null, created_by: userId })
+    .insert({ company_id: companyId, name: name.toUpperCase().trim(), description: description || null, ncm: ncm || null, created_by: userId })
     .select("*")
     .single();
   if (error) throw error;
   return data as Category;
 }
 
-export async function updateCategory(id: string, name: string, description?: string) {
+export async function updateCategory(id: string, name: string, description?: string, ncm?: string | null) {
   const { data, error } = await db
     .from("categories")
-    .update({ name: name.toUpperCase().trim(), description: description || null })
+    .update({ name: name.toUpperCase().trim(), description: description || null, ncm: ncm ?? null })
     .eq("id", id)
     .select("*")
     .single();
@@ -654,34 +668,21 @@ export async function fetchProductsPaginated(params: {
   sortBy?: string;
   sortOrder?: 'asc' | 'desc';
   hasAdditionalBrands?: boolean;
+  ncmFilter?: "all" | "with" | "without";
 }) {
   let query = db
     .from("products")
     .select("*, profiles!products_updated_by_fkey(name)", { count: "exact" })
     .eq("company_id", params.companyId);
 
-  const normalizeSearchValue = (value: unknown) => String(value ?? "")
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .replace(/['’‘`´"”“]/g, "")
-      .replace(/[.,;:!?\-_/\\()\[\]{}]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
   const searchTerm = params.search?.trim() ?? "";
-  const searchWords = normalizeSearchValue(searchTerm)
+  const normalizedSearchTerm = normalizeProductSearchQuery(searchTerm);
+  const searchWords = normalizedSearchTerm
       .split(/\s+/)
       .filter(Boolean);
 
+  // Refs apenas se cair no fallback (busca complexa). Evita custo em cada tecla.
   let companyRefsForSearch: any[] = [];
-  if (searchWords.length > 0) {
-    const { data: refs } = await db
-      .from("product_references")
-      .select("product_id, manufacturer_code")
-      .eq("company_id", params.companyId);
-    companyRefsForSearch = refs ?? [];
-  }
 
   if (params.categoryId && params.categoryId !== "all" && params.categoryId !== "none") {
     query = query.eq("category_id", params.categoryId);
@@ -699,7 +700,7 @@ export async function fetchProductsPaginated(params: {
     query = query.eq("stock", 0);
   } else if (params.status === "baixo") {
     query = query.lte("stock", db.raw("min_stock")); 
-    // Wait, appwrite-js might not like db.raw directly in lte if it's a column.
+    // Wait, supabase-js might not like db.raw directly in lte if it's a column.
     // Actually, we can use filter or rpc, but let's try a simpler approach if possible.
     // In postgrest, comparing columns: `stock=lte.min_stock`
     query = query.filter("stock", "lte", "min_stock"); // This is the correct way for column comparison in postgrest
@@ -712,7 +713,7 @@ export async function fetchProductsPaginated(params: {
       .from("product_references")
       .select("product_id")
       .eq("company_id", params.companyId);
-    
+
     const uniqueIds = Array.from(new Set((refIds || []).map((r: any) => r.product_id)));
     if (uniqueIds.length > 0) {
       query = query.in("id", uniqueIds);
@@ -721,94 +722,48 @@ export async function fetchProductsPaginated(params: {
     }
   }
 
+  if (params.ncmFilter === "with") {
+    query = query.not("ncm", "is", null).not("ncm", "eq", "").not("ncm", "eq", "00000000");
+  } else if (params.ncmFilter === "without") {
+    query = query.or("ncm.is.null,ncm.eq.,ncm.eq.00000000");
+  }
+
   if (searchWords.length > 0) {
-    let allProducts: any[] = [];
-    let searchFrom = 0;
-    const searchStep = 1000;
-    const orderedQuery = query
-      .order(params.sortBy === "name" || !params.sortBy ? "name" : params.sortBy, { ascending: params.sortOrder !== 'desc' })
-      .order("name", { ascending: true });
+    // Busca server-side via RPC search_products (tsvector + GIN).
+    const { data, error } = await db.rpc("search_products", {
+      _company: params.companyId,
+      _q: normalizedSearchTerm,
+      _category: params.categoryId && params.categoryId !== "all" && params.categoryId !== "none" ? params.categoryId : null,
+      _brand: params.brandId && params.brandId !== "all" && params.brandId !== "none" ? params.brandId : null,
+      _location: params.locationId && params.locationId !== "all" && params.locationId !== "none" ? params.locationId : null,
+      _status: params.status && ["zerado", "baixo", "ok"].includes(params.status) ? params.status : null,
+      _has_refs: !!params.hasAdditionalBrands,
+      _sort_by: params.sortBy || "name",
+      _sort_desc: params.sortOrder === "desc",
+      _limit: params.pageSize,
+      _offset: params.page * params.pageSize,
+      _ncm_filter: params.ncmFilter && params.ncmFilter !== "all" ? params.ncmFilter : null,
+    });
+    if (error) throw error;
 
-    // Tentar primeiro uma busca rápida direta no banco para termos exatos/prefixos (muito mais rápido)
-    const exactSearchQuery = db
-      .from("products")
-      .select("*, profiles!products_updated_by_fkey(name)", { count: "exact" })
-      .eq("company_id", params.companyId);
+    const payload = (data as any) || { rows: [], total: 0 };
+    const rows: any[] = payload.rows || [];
+    const total: number = Number(payload.total || 0);
 
-    // Se tivermos poucos termos, tentamos um ilike básico no nome ou sku
-    if (searchWords.length === 1) {
-      const term = `%${searchWords[0]}%`;
-      exactSearchQuery.or(`name.ilike.${term},sku.ilike.${term},barcode.ilike.${term},alternative_code.ilike.${term}`);
-      
-      const from = params.page * params.pageSize;
-      const to = from + params.pageSize - 1;
-      
-      const { data: quickBatch, count: quickCount, error: quickError } = await exactSearchQuery
-        .order(params.sortBy === "name" || !params.sortBy ? "name" : params.sortBy, { ascending: params.sortOrder !== 'desc' })
-        .order("name", { ascending: true })
-        .range(from, to);
-
-      if (!quickError && quickBatch && quickBatch.length > 0) {
-        // Se encontramos resultados diretos, retornamos eles (busca rápida)
-        // Isso cobre 90% dos casos de uso comuns
-        const productIds = quickBatch.map((p: any) => p.id);
-        let refsByProduct: Record<string, string[]> = {};
-        if (productIds.length > 0) {
-          const { data: refs } = await db
-            .from("product_references")
-            .select("product_id, manufacturer_code")
-            .in("product_id", productIds);
-          for (const r of (refs ?? [])) {
-            if (!refsByProduct[r.product_id]) refsByProduct[r.product_id] = [];
-            refsByProduct[r.product_id].push(r.manufacturer_code);
-          }
-        }
-
-        const mapped = quickBatch.map((p: any) => ({
-          ...p,
-          last_editor_profile: p.profiles ? { name: p.profiles.name } : null,
-          product_references: (refsByProduct[p.id] || []).map(code => ({ manufacturer_code: code })),
-        })) as Product[];
-
-        return {
-          data: mapped,
-          count: quickCount ?? quickBatch.length,
-        };
+    const productIds = rows.map((p) => p.id);
+    let refsByProduct: Record<string, string[]> = {};
+    if (productIds.length > 0) {
+      const { data: refs } = await db
+        .from("product_references")
+        .select("product_id, manufacturer_code")
+        .in("product_id", productIds);
+      for (const r of refs ?? []) {
+        if (!refsByProduct[r.product_id]) refsByProduct[r.product_id] = [];
+        refsByProduct[r.product_id].push(r.manufacturer_code);
       }
     }
 
-    // Fallback para busca complexa (normalizada/multi-campos) se a busca rápida não retornar nada
-    while (true) {
-      const { data: batch, error: batchError } = await orderedQuery.range(searchFrom, searchFrom + searchStep - 1);
-      if (batchError) throw batchError;
-      if (!batch || batch.length === 0) break;
-      allProducts = [...allProducts, ...batch];
-      if (batch.length < searchStep) break;
-      searchFrom += searchStep;
-    }
-
-    const refsByProduct: Record<string, string[]> = {};
-    for (const r of companyRefsForSearch) {
-      if (!refsByProduct[r.product_id]) refsByProduct[r.product_id] = [];
-      refsByProduct[r.product_id].push(r.manufacturer_code);
-    }
-
-    const filteredProducts = allProducts.filter((p: any) => {
-      const searchable = [
-        p.name,
-        p.sku,
-        p.barcode,
-        p.alternative_code,
-        p.description,
-        p.brand,
-        ...(refsByProduct[p.id] || []),
-      ].map(normalizeSearchValue).join(" ");
-      return searchWords.every(word => searchable.includes(word));
-    });
-
-    const from = params.page * params.pageSize;
-    const products = filteredProducts.slice(from, from + params.pageSize);
-    const creatorIds = Array.from(new Set(products.map((p: any) => p.created_by).filter(Boolean)));
+    const creatorIds = Array.from(new Set(rows.map((p) => p.created_by).filter(Boolean)));
     let creatorMap: Record<string, string> = {};
     if (creatorIds.length > 0) {
       const { data: creators } = await db
@@ -818,18 +773,29 @@ export async function fetchProductsPaginated(params: {
       creatorMap = Object.fromEntries((creators ?? []).map((c: any) => [c.id, c.name]));
     }
 
-    const mapped = products.map((p: any) => ({
+    let mapped = rows.map((p) => ({
       ...p,
-      last_editor_profile: p.profiles ? { name: p.profiles.name } : null,
+      last_editor_profile: p._updater_name ? { name: p._updater_name } : null,
       profiles: p.created_by && creatorMap[p.created_by] ? { name: creatorMap[p.created_by] } : null,
-      product_references: (refsByProduct[p.id] || []).map(code => ({ manufacturer_code: code })),
+      product_references: (refsByProduct[p.id] || []).map((code) => ({ manufacturer_code: code })),
     })) as Product[];
 
-    return {
-      data: mapped,
-      count: filteredProducts.length,
-    };
+    // Filtro NCM aplicado pós-RPC como garantia caso o RPC antigo ainda esteja em cache.
+    if (params.ncmFilter === "with") {
+      mapped = mapped.filter((p) => {
+        const ncm = normalizeNcm(p.ncm);
+        return ncm.length === 8 && ncm !== "00000000";
+      });
+    } else if (params.ncmFilter === "without") {
+      mapped = mapped.filter((p) => {
+        const ncm = normalizeNcm(p.ncm);
+        return ncm.length !== 8 || ncm === "00000000";
+      });
+    }
+
+    return { data: mapped, count: total };
   }
+
 
   const from = params.page * params.pageSize;
   const to = from + params.pageSize - 1;
@@ -880,6 +846,32 @@ export async function fetchProductsPaginated(params: {
   };
 }
 
+export async function searchProductsRpc(params: {
+  companyId: string;
+  search: string;
+  brandId?: string | null;
+  limit?: number;
+}): Promise<Product[]> {
+  const { data, error } = await db.rpc("search_products", {
+    _company: params.companyId,
+    _q: normalizeProductSearchQuery(params.search),
+    _category: null,
+    _brand: params.brandId && params.brandId !== "all" ? params.brandId : null,
+    _location: null,
+    _status: null,
+    _has_refs: false,
+    _sort_by: "name",
+    _sort_desc: false,
+    _limit: params.limit ?? 100,
+    _offset: 0,
+  });
+  if (error) throw error;
+  const payload = (data as any) || { rows: [] };
+  return ((payload.rows as any[]) || []) as Product[];
+}
+
+
+
 export async function fetchProductsByManufacturerCode(
   companyId: string,
   term: string,
@@ -898,7 +890,7 @@ export async function fetchProductsByManufacturerCode(
       .from("products")
       .select("*, profiles!products_updated_by_fkey(name)")
       .eq("company_id", companyId)
-      .or(`sku.ilike.%${searchTerm}%,alternative_code.ilike.%${searchTerm}%,barcode.ilike.%${searchTerm}%`)
+      .or(`sku.ilike.%${searchTerm}%,alternative_code.ilike.%${searchTerm}%,name.ilike.%${searchTerm}%,name.ilike.%${searchTerm.endsWith("s") ? searchTerm.slice(0, -1) : searchTerm + "s"}%`)
       .order("name", { ascending: true })
       .limit(limit),
   ]);
@@ -955,6 +947,7 @@ export async function fetchProducts(companyId: string): Promise<Product[]> {
       .select("*, profiles!products_updated_by_fkey(name)")
       .eq("company_id", companyId)
       .order("name", { ascending: true })
+      .order("id", { ascending: true })
       .range(from, from + step - 1);
 
     if (error) throw error;
@@ -980,19 +973,35 @@ export async function fetchProducts(companyId: string): Promise<Product[]> {
     creatorMap = Object.fromEntries((creators ?? []).map((c: any) => [c.id, c.name]));
   }
 
+  // Buscar códigos adicionais (product_references) para busca por sub-marcas no PDV
+  const refsByProduct: Record<string, string[]> = {};
+  {
+    const { data: refs } = await db
+      .from("product_references")
+      .select("product_id, manufacturer_code")
+      .eq("company_id", companyId);
+    for (const r of refs ?? []) {
+      if (!r.manufacturer_code) continue;
+      if (!refsByProduct[r.product_id]) refsByProduct[r.product_id] = [];
+      refsByProduct[r.product_id].push(r.manufacturer_code);
+    }
+  }
+
   return products.map((p) => ({
     ...p,
     last_editor_profile: p.profiles ? { name: p.profiles.name } : null,
     profiles: p.created_by && creatorMap[p.created_by] ? { name: creatorMap[p.created_by] } : null,
+    product_references: (refsByProduct[p.id] || []).map((code) => ({ manufacturer_code: code })),
   })) as Product[];
 }
+
 
 export async function createProduct(
   companyId: string,
   input: {
     sku: string;
     alternative_code?: string | null;
-    barcode?: string | null;
+    
     name: string;
     brand?: string | null;
     brand_id?: string | null;
@@ -1007,9 +1016,12 @@ export async function createProduct(
     unit?: string;
     unit_id?: string | null;
     image_url?: string | null;
+    ncm?: string | null;
     userId?: string;
   }
 ): Promise<Product> {
+  const ncm = normalizeRequiredNcm(input.ncm);
+
   // Validação de duplicidade de SKU dentro da empresa
   if (input.sku) {
     // Checa SKU principal
@@ -1041,7 +1053,7 @@ export async function createProduct(
       company_id: companyId,
       sku: input.sku,
       alternative_code: input.alternative_code || null,
-      barcode: input.barcode || null,
+
       name: input.name.trim(),
       brand: input.brand || null,
       brand_id: input.brand_id || null,
@@ -1056,6 +1068,7 @@ export async function createProduct(
       unit: input.unit || "UN",
       unit_id: input.unit_id ?? null,
       image_url: input.image_url || null,
+      ncm,
       created_by: input.userId,
     } as any;
 
@@ -1071,6 +1084,34 @@ export async function createProduct(
   }
   if (error) throw error;
 
+  // Auto-adiciona produto à contagem aberta da empresa (se existir)
+  try {
+    const { data: openCount } = await db
+      .from("stock_counts")
+      .select("id")
+      .eq("company_id", companyId)
+      .eq("status", "aberta")
+      .maybeSingle();
+    if (openCount?.id) {
+      const qty = Number(data.stock || 0);
+      const price = Number(data.sale_price || 0);
+      const autoVerified = qty > 0 && price > 0;
+      await db.from("stock_count_items").insert({
+        count_id: openCount.id,
+        company_id: companyId,
+        product_id: data.id,
+        sku: data.sku,
+        product_name: data.name,
+        unit: data.unit || "UN",
+        expected_quantity: qty,
+        verified: autoVerified,
+        verified_at: autoVerified ? new Date().toISOString() : null,
+      });
+    }
+  } catch (e) {
+    console.warn("Falha ao adicionar produto à contagem aberta:", e);
+  }
+
   // Auditoria
   if (input.userId) {
     await logActivity({
@@ -1079,7 +1120,7 @@ export async function createProduct(
       action: "INSERT",
       entity: "products",
       entityId: data.id,
-      meta: { new: data }
+      meta: { new: data },
     });
   }
 
@@ -1087,6 +1128,10 @@ export async function createProduct(
 }
 
 export async function updateProduct(id: string, patch: Partial<Product>, userId?: string) {
+  const normalizedNcm = Object.prototype.hasOwnProperty.call(patch, "ncm")
+    ? normalizeRequiredNcm((patch as any).ncm)
+    : undefined;
+
   // Validação de duplicidade de SKU ao atualizar
   if (patch.sku) {
     // Primeiro pegamos a empresa do produto
@@ -1127,6 +1172,7 @@ export async function updateProduct(id: string, patch: Partial<Product>, userId?
   const normalizedPatch = {
     ...patch,
     ...(typeof patch.name === "string" ? { name: patch.name.trim() } : {}),
+    ...(normalizedNcm !== undefined ? { ncm: normalizedNcm } : {}),
   } as any;
 
   const { data, error } = await db
@@ -1136,6 +1182,47 @@ export async function updateProduct(id: string, patch: Partial<Product>, userId?
     .select("*")
     .single();
   if (error) throw error;
+
+  // Sincroniza item da contagem aberta (insere se faltar, atualiza nome/sku/unit)
+  try {
+    const { data: openCount } = await db
+      .from("stock_counts")
+      .select("id")
+      .eq("company_id", data.company_id)
+      .eq("status", "aberta")
+      .maybeSingle();
+    if (openCount?.id) {
+      const { data: existingItem } = await db
+        .from("stock_count_items")
+        .select("id")
+        .eq("count_id", openCount.id)
+        .eq("product_id", data.id)
+        .maybeSingle();
+      if (existingItem?.id) {
+        await db
+          .from("stock_count_items")
+          .update({
+            sku: data.sku,
+            product_name: data.name,
+            unit: data.unit || "UN",
+          })
+          .eq("id", existingItem.id);
+      } else {
+        await db.from("stock_count_items").insert({
+          count_id: openCount.id,
+          company_id: data.company_id,
+          product_id: data.id,
+          sku: data.sku,
+          product_name: data.name,
+          unit: data.unit || "UN",
+          expected_quantity: Number(data.stock || 0),
+          verified: false,
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("Falha ao sincronizar produto com contagem aberta:", e);
+  }
 
   // Auditoria
   if (userId) {
@@ -1310,18 +1397,6 @@ export async function replaceProductReferences(
   if (error) throw error;
 }
 
-export async function findProductByBarcode(companyId: string, barcode: string): Promise<Product | null> {
-  const norm = barcode.trim();
-  if (!norm) return null;
-  const { data, error } = await db
-    .from("products")
-    .select("*")
-    .eq("company_id", companyId)
-    .eq("barcode", norm)
-    .maybeSingle();
-  if (error && error.code !== "PGRST116") throw error;
-  return (data as Product) ?? null;
-}
 
 // ---------- Movements ----------
 export async function fetchMovementsPaginated(params: {
@@ -1408,13 +1483,27 @@ export async function fetchStockCounts(companyId: string): Promise<StockCount[]>
 }
 
 export async function fetchStockCountItems(countId: string): Promise<StockCountItem[]> {
-  const { data, error } = await db
-    .from("stock_count_items")
-    .select("*")
-    .eq("count_id", countId)
-    .order("product_name", { ascending: true });
-  if (error) throw error;
-  return (data ?? []) as StockCountItem[];
+  let allData: StockCountItem[] = [];
+  let from = 0;
+  const step = 1000;
+
+  while (true) {
+    const { data, error } = await db
+      .from("stock_count_items")
+      .select("*")
+      .eq("count_id", countId)
+      .order("product_name", { ascending: true })
+      .range(from, from + step - 1);
+
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+
+    allData = [...allData, ...(data as StockCountItem[])];
+    if (data.length < step) break;
+    from += step;
+  }
+
+  return allData;
 }
 
 export async function createStockCount(input: {
@@ -1661,6 +1750,124 @@ export interface SaleItemInput {
   unit_price: number;
 }
 
+// Soma N meses a uma data YYYY-MM-DD (mantém o dia, ajustando para o último do mês quando necessário)
+function addMonthsToDate(iso: string, months: number): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  const base = new Date(Date.UTC(y, (m - 1) + months, 1));
+  const lastDay = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 0)).getUTCDate();
+  base.setUTCDate(Math.min(d, lastDay));
+  return base.toISOString().slice(0, 10);
+}
+
+// Distribui um valor em N parcelas iguais (ajustando centavos na última)
+function splitInstallments(amount: number, n: number): number[] {
+  const cents = Math.round(amount * 100);
+  const base = Math.floor(cents / n);
+  const remainder = cents - base * n;
+  const arr = Array(n).fill(base).map((c, i) => (i === n - 1 ? c + remainder : c));
+  return arr.map((c) => c / 100);
+}
+
+// Métodos considerados "à vista" (geram payable já marcado como pago)
+function isCashLikeMethod(method: string): boolean {
+  const m = (method || "").toLowerCase();
+  return /(dinheiro|pix|d[eé]bito|cart[aã]o\s*d[eé]bito)/.test(m);
+}
+
+export async function saveSalePayments(
+  companyId: string,
+  saleId: string,
+  payments: SalePaymentInput[]
+): Promise<void> {
+  if (!payments || payments.length === 0) return;
+  await db.from("sale_payments").delete().eq("sale_id", saleId);
+  const rows = payments.map((p) => ({
+    sale_id: saleId,
+    company_id: companyId,
+    payment_method_id: p.payment_method_id ?? null,
+    method: p.method,
+    amount: Number(p.amount),
+    installments: Math.max(1, Number(p.installments ?? 1)),
+    first_due_date: p.first_due_date ?? null,
+    notes: p.notes ?? null,
+  }));
+  const { error } = await db.from("sale_payments").insert(rows);
+  if (error) throw error;
+}
+
+export async function fetchSalePayments(saleId: string): Promise<SalePayment[]> {
+  const { data, error } = await db
+    .from("sale_payments")
+    .select("*")
+    .eq("sale_id", saleId)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as SalePayment[];
+}
+
+// Gera N entradas em payables a partir de um sale_payment
+async function createPayablesForPayment(opts: {
+  companyId: string;
+  saleId: string;
+  customerId: string | null;
+  payment: SalePaymentInput;
+  createdBy?: string | null;
+  notes?: string | null;
+}) {
+  const { payment, saleId, companyId, customerId, createdBy, notes } = opts;
+  const installments = Math.max(1, Number(payment.installments ?? 1));
+  const today = new Date().toISOString().slice(0, 10);
+  const firstDue = payment.first_due_date || today;
+
+  // Determina se a forma de pagamento exige vencimento (à prazo).
+  // Se não exigir, a venda é à vista e o lançamento já nasce "pago".
+  let requiresDueDate = false;
+  if (payment.payment_method_id) {
+    const { data: pm } = await db
+      .from("payment_methods")
+      .select("requires_due_date")
+      .eq("id", payment.payment_method_id)
+      .maybeSingle();
+    if (pm) requiresDueDate = !!pm.requires_due_date;
+  } else if (payment.method) {
+    const { data: pm } = await db
+      .from("payment_methods")
+      .select("requires_due_date")
+      .eq("company_id", companyId)
+      .eq("name", payment.method)
+      .maybeSingle();
+    if (pm) requiresDueDate = !!pm.requires_due_date;
+  }
+  const isPaid = !requiresDueDate;
+  const parts = splitInstallments(Number(payment.amount), installments);
+
+  const rows = parts.map((amt, idx) => {
+    const due = idx === 0 ? firstDue : addMonthsToDate(firstDue, idx);
+    const label = installments > 1 ? ` (${idx + 1}/${installments} - ${payment.method})` : "";
+    return {
+      company_id: companyId,
+      direction: "receber" as PayableDirection,
+      partner_id: customerId,
+      sale_id: saleId,
+      description: `Venda #${saleId.slice(0, 8)}${label}`,
+      amount: amt,
+      due_date: due,
+      status: isPaid ? "pago" : "aberto",
+      paid_at: isPaid ? today : null,
+      payment_method: payment.method,
+      notes: notes ?? null,
+      created_by: createdBy ?? null,
+    };
+  });
+  if (rows.length === 0) return;
+  const { error } = await db.from("payables").insert(rows);
+  if (error) {
+    console.error("Erro ao inserir payables (parcelas):", error);
+    throw error;
+  }
+}
+
+
 export async function registerSale(input: {
   companyId: string;
   customerId: string | null;
@@ -1668,39 +1875,42 @@ export async function registerSale(input: {
   discount?: number;
   paymentMethod?: string;
   dueDate?: string | null;
+  payments?: SalePaymentInput[];
   notes?: string | null;
   userId?: string;
   status?: "aberta" | "concluida";
 }): Promise<string> {
-  const { data: { user } } = await appwrite.auth.getUser();
+  const { data: { user } } = await supabase.auth.getUser();
   const currentUserId = user?.id;
   const realCreatorId = input.userId || currentUserId;
 
   // Se o customerId for "none", passamos null para o RPC
   const cleanCustomerId = (input.customerId === "none" || !input.customerId) ? null : input.customerId;
 
+  // Forma "principal" (snapshot legado em sales.payment_method): a de maior valor
+  const dominant = (input.payments && input.payments.length > 0)
+    ? [...input.payments].sort((a, b) => Number(b.amount) - Number(a.amount))[0]
+    : null;
+  const legacyPaymentMethod = dominant?.method ?? input.paymentMethod ?? "dinheiro";
+  const legacyDueDate = dominant?.first_due_date ?? input.dueDate ?? null;
+
   const { data, error } = await db.rpc("register_sale", {
     _company: input.companyId,
     _customer: cleanCustomerId,
     _items: input.items,
     _discount: input.discount ?? 0,
-    _payment_method: input.paymentMethod ?? "dinheiro",
-    _due_date: input.dueDate ?? null,
+    _payment_method: legacyPaymentMethod,
+    _due_date: legacyDueDate,
     _notes: input.notes ?? null,
+    _status: input.status ?? "concluida",
   });
-  
+
   if (error) {
     console.error("Erro no RPC register_sale:", error);
     throw error;
   }
-  
-  const saleId = data as string;
 
-  // Se o status for diferente de 'concluida', atualizamos manualmente
-  // Já que o RPC atual hardcodifica 'concluida'
-  if (input.status && input.status !== 'concluida') {
-    await db.from("sales").update({ status: input.status }).eq("id", saleId);
-  }
+  const saleId = data as string;
 
   // Auditoria
   if (currentUserId) {
@@ -1712,8 +1922,6 @@ export async function registerSale(input: {
       entityId: saleId,
       meta: { input }
     });
-    // Fallback: se a versão antiga do RPC ignorou _created_by, garantimos aqui em sales e payables.
-    // (stock_movements não é atualizável por RLS — o RPC novo já grava o created_by correto.)
     if (realCreatorId && realCreatorId !== currentUserId) {
       try {
         await db.from("sales").update({ created_by: realCreatorId }).eq("id", saleId);
@@ -1724,56 +1932,84 @@ export async function registerSale(input: {
     }
   }
 
-  // Sincronizar com o Financeiro (Contas a Receber/Pago) e Fluxo de Caixa
-  // Nota: O RPC atual pode não estar inserindo em payables, então garantimos aqui.
+  // Sincronizar financeiro
   try {
     let subtotal = 0;
     for (const item of input.items) {
       subtotal += Number(item.quantity) * Number(item.unit_price);
     }
     const total = Math.max(subtotal - (input.discount || 0), 0);
-    
-    // Sincronizar com o Financeiro (Contas a Receber/Pago) e Fluxo de Caixa
-    // APENAS se a venda não estiver em aberto (carrinho)
+
     if (input.status !== 'aberta') {
-      // Se não houver data de vencimento, consideramos venda à vista (pago)
-      const isPaid = !input.dueDate;
-      
-      // Verifica se já existe um payable para esta venda (evita duplicidade se o RPC for corrigido)
-      const { data: existing } = await db.from("payables").select("id").eq("sale_id", saleId).maybeSingle();
-      
-      if (!existing && total > 0) {
-        const { error: payableError } = await db.from("payables").insert({
-          company_id: input.companyId,
-          direction: "receber",
-          partner_id: cleanCustomerId,
-          sale_id: saleId,
-          description: `Venda #${saleId.slice(0, 8)}`,
-          amount: total,
-          due_date: input.dueDate || new Date().toISOString().slice(0, 10),
-          status: isPaid ? "pago" : "aberto",
-          paid_at: isPaid ? new Date().toISOString().slice(0, 10) : null,
-          payment_method: input.paymentMethod || "dinheiro",
-          notes: input.notes,
-          created_by: realCreatorId
-        });
+      const hasMultiPayments = !!(input.payments && input.payments.length > 0);
 
-        if (payableError) {
-          console.error("Erro ao inserir payable:", payableError);
+      if (hasMultiPayments) {
+        // Salva os pagamentos e gera 1 payable por parcela
+        await saveSalePayments(input.companyId, saleId, input.payments!);
+        // Remove qualquer payable que o RPC tenha criado, para evitar duplicidade
+        await db.from("payables").delete().eq("sale_id", saleId);
+        for (const p of input.payments!) {
+          await createPayablesForPayment({
+            companyId: input.companyId,
+            saleId,
+            customerId: cleanCustomerId,
+            payment: p,
+            createdBy: realCreatorId,
+            notes: input.notes ?? null,
+          });
         }
-      }
-
-      // Sincronização automática com o Fluxo de Caixa se for venda à vista
-      if (isPaid && realCreatorId && total > 0) {
-        await syncSaleCashTransaction({
-          companyId: input.companyId,
-          saleId: saleId,
+        // Fluxo de caixa: uma transação por forma de pagamento à vista (inclui cartão de crédito)
+        if (realCreatorId) {
+          await syncSaleMultiPaymentCashTransactions({
+            companyId: input.companyId,
+            saleId,
+            userId: realCreatorId,
+            payments: input.payments!,
+            description: `Venda #${saleId.slice(0, 8)}`,
+          });
+        }
+      } else {
+        // Caminho legado (uma forma de pagamento)
+        const isPaid = !input.dueDate;
+        const { data: existing } = await db.from("payables").select("id").eq("sale_id", saleId).maybeSingle();
+        if (!existing && total > 0) {
+          const { error: payableError } = await db.from("payables").insert({
+            company_id: input.companyId,
+            direction: "receber",
+            partner_id: cleanCustomerId,
+            sale_id: saleId,
+            description: `Venda #${saleId.slice(0, 8)}`,
+            amount: total,
+            due_date: input.dueDate || new Date().toISOString().slice(0, 10),
+            status: isPaid ? "pago" : "aberto",
+            paid_at: isPaid ? new Date().toISOString().slice(0, 10) : null,
+            payment_method: legacyPaymentMethod,
+            notes: input.notes,
+            created_by: realCreatorId
+          });
+          if (payableError) console.error("Erro ao inserir payable:", payableError);
+        }
+        if (isPaid && realCreatorId && total > 0) {
+          await syncSaleCashTransaction({
+            companyId: input.companyId,
+            saleId,
+            amount: total,
+            paymentMethod: legacyPaymentMethod,
+            userId: realCreatorId,
+            description: `Venda #${saleId.slice(0, 8)}`
+          });
+        }
+        // Também grava 1 sale_payment legado para histórico
+        await saveSalePayments(input.companyId, saleId, [{
+          method: legacyPaymentMethod,
           amount: total,
-          paymentMethod: input.paymentMethod || "dinheiro",
-          userId: realCreatorId,
-          description: `Venda #${saleId.slice(0, 8)}`
-        });
+          installments: 1,
+          first_due_date: input.dueDate ?? null,
+        }]);
       }
+    } else if (input.payments && input.payments.length > 0) {
+      // Venda em aberto: só salva o snapshot de pagamentos, sem gerar payables
+      await saveSalePayments(input.companyId, saleId, input.payments);
     }
   } catch (err) {
     console.error("Erro ao sincronizar financeiro para a venda:", err);
@@ -1791,10 +2027,15 @@ export async function fetchSalesPaginated(params: {
   dateFrom?: string;
   dateTo?: string;
   userId?: string;
+  cashRegisterId?: string;
 }) {
+  if (params.status === "aberta") {
+    return { data: [], count: 0 };
+  }
+
   let query = db
     .from("sales")
-    .select("*, profiles(name)", { count: "exact" })
+    .select("*", { count: "exact" })
     .eq("company_id", params.companyId);
 
   if (params.search) {
@@ -1807,22 +2048,43 @@ export async function fetchSalesPaginated(params: {
     }
   }
 
+  query = query.neq("status", "aberta");
+
   if (params.status && params.status !== "all" && params.status !== "todas") {
     query = query.eq("status", params.status);
   }
 
-  if (params.dateFrom) {
+  if (params.cashRegisterId) {
+    const { data: register, error: registerError } = await db
+      .from("cash_registers")
+      .select("user_id_open, opened_at, closed_at")
+      .eq("id", params.cashRegisterId)
+      .eq("company_id", params.companyId)
+      .maybeSingle();
+
+    if (registerError) throw registerError;
+    if (!register?.user_id_open || !register?.opened_at) {
+      return { data: [], count: 0 };
+    }
+
+    query = query
+      .or(`created_by.eq.${register.user_id_open},origin.eq.delivery`)
+      .gte("created_at", register.opened_at)
+      .lte("created_at", register.closed_at || new Date().toISOString());
+  } else if (params.dateFrom) {
     query = query.gte("created_at", params.dateFrom);
   }
 
-  if (params.dateTo) {
+  if (!params.cashRegisterId && params.dateTo) {
     const toDate = params.dateTo.includes('T') ? params.dateTo : `${params.dateTo}T23:59:59`;
     query = query.lte("created_at", toDate);
   }
 
   if (params.userId) {
-    query = query.eq("created_by", params.userId);
+    // Inclui vendas de delivery no histórico de qualquer operador
+    query = query.or(`created_by.eq.${params.userId},origin.eq.delivery`);
   }
+
 
   const from = params.page * params.pageSize;
   const to = from + params.pageSize - 1;
@@ -1851,13 +2113,20 @@ export async function fetchSalesPaginated(params: {
   };
 }
 
-export async function fetchSales(companyId: string, limit = 100): Promise<any[]> {
-  const { data, error } = await db
+export async function fetchSales(
+  companyId: string,
+  limit = 100,
+  opts?: { from?: string; to?: string },
+): Promise<any[]> {
+  let q = db
     .from("sales")
     .select("*")
     .eq("company_id", companyId)
     .order("created_at", { ascending: false })
     .limit(limit);
+  if (opts?.from) q = q.gte("created_at", `${opts.from}T00:00:00`);
+  if (opts?.to) q = q.lte("created_at", `${opts.to}T23:59:59.999`);
+  const { data, error } = await q;
   if (error) throw error;
   const sales = data ?? [];
   const userIds = Array.from(new Set(sales.map((s: any) => s.created_by).filter(Boolean)));
@@ -1891,7 +2160,20 @@ export async function updateSaleItems(
   discount: number = 0,
   reason?: string
 ): Promise<void> {
-  const { data: { user } } = await appwrite.auth.getUser();
+  // Bloqueia edição de venda com NFC-e ativa (autorizada/processando)
+  const { data: activeNote } = await db
+    .from("fiscal_notes")
+    .select("status")
+    .eq("sale_id", saleId)
+    .in("status", ["autorizada", "processando"])
+    .maybeSingle();
+  if (activeNote) {
+    throw new Error(
+      `Venda possui NFC-e ${activeNote.status}. Cancele a nota fiscal antes de editar a venda.`,
+    );
+  }
+
+  const { data: { user } } = await supabase.auth.getUser();
 
   // Manual update of sale items
   // 1. Get old items to restore stock
@@ -1920,19 +2202,13 @@ export async function updateSaleItems(
   }
   const total = Math.max(subtotal - discount, 0);
 
-  // 4. Update sale
-  const { data: currentSale } = await db.from("sales").select("total").eq("id", saleId).single();
-  const shouldUpdatePrice = currentSale && Number(currentSale.total) === 0;
-
+  // 4. Update sale — sempre recalcula o total a partir dos itens novos
   const updatePayload: any = {
     subtotal,
     discount,
-    notes: reason ? `Edição: ${reason}` : null
+    total,
+    notes: reason ? `Edição: ${reason}` : null,
   };
-
-  if (shouldUpdatePrice) {
-    updatePayload.total = total;
-  }
 
   await db.from("sales").update(updatePayload).eq("id", saleId);
 
@@ -2007,24 +2283,79 @@ export async function updateSaleItems(
   }
 }
 
+export interface EditSaleFullPayload {
+  items: { product_id: string; quantity: number; unit_price: number }[];
+  discount: number;
+  reason: string;
+  customer_id: string | null;
+  payment_method: string | null;
+  due_date: string | null;
+  notes: string | null;
+}
+
+export async function editSaleFull(saleId: string, payload: EditSaleFullPayload): Promise<string> {
+  const { data, error } = await db.rpc("edit_sale", {
+    _sale_id: saleId,
+    _items: payload.items,
+    _discount: payload.discount,
+    _customer_id: payload.customer_id,
+    _payment_method: payload.payment_method,
+    _due_date: payload.due_date,
+    _notes: payload.notes,
+    _reason: payload.reason,
+  });
+  if (error) throw new Error(error.message);
+  return data as string;
+}
+
 export async function reopenSale(saleId: string): Promise<string> {
   const { data, error } = await db.rpc("reopen_sale", { _sale: saleId });
   if (error) throw error;
   return data as string;
 }
 
-export async function cancelSale(saleId: string, reason?: string): Promise<string> {
-  const { data: { user } } = await appwrite.auth.getUser();
+// Reabre uma venda concluída devolvendo-a ao carrinho (status 'aberta').
+// Remove payables e sale_payments associados. Não mexe em estoque (já está deduzido).
+export async function reopenSaleToCart(saleId: string, userId?: string): Promise<string> {
+  const { data, error } = await (db as any).rpc("reopen_sale_to_cart", { _sale: saleId });
+  if (error) throw error;
+  await db.from("cash_transactions").delete().eq("reference_id", saleId).eq("category", "SALE");
+  await db.from("payables").delete().eq("sale_id", saleId);
+  await db.from("sale_payments").delete().eq("sale_id", saleId);
+  if (userId) {
+    await db.from("sales").update({ created_by: userId }).eq("id", saleId);
+  }
+  return data as string;
+}
+
+export async function cancelSale(
+  saleId: string,
+  reason?: string,
+  opts?: { onlyIfStatus?: string },
+): Promise<string> {
+  const { data: { user } } = await supabase.auth.getUser();
 
   // 1. Obter detalhes da venda para o log
   const { data: sale } = await db.from("sales").select("*").eq("id", saleId).maybeSingle();
 
+  // Trava de segurança: cancelamentos automáticos só podem atingir vendas
+  // que continuam no status esperado (ex.: "aberta").
+  if (opts?.onlyIfStatus && sale && (sale as any).status !== opts.onlyIfStatus) {
+    return saleId;
+  }
+
   // Use RPC if available, otherwise manual
-  const { data, error } = await db.rpc("cancel_sale", { _sale_id: saleId, _reason: reason });
-  
+  const { data, error } = await db.rpc("cancel_sale", { _sale: saleId } as any);
+
+
   // Update notes even if RPC succeeded
   if (!error && reason) {
     await db.from("sales").update({ notes: `Cancelamento: ${reason}${user?.id ? ` (por ${user.id})` : ""}` }).eq("id", saleId);
+  }
+
+  // Remove transações de caixa vinculadas à venda cancelada (RPC cancel_sale não faz isso)
+  if (!error) {
+    await db.from("cash_transactions").delete().eq("reference_id", saleId);
   }
 
   if (!error && user?.id && sale) {
@@ -2092,7 +2423,7 @@ export async function cancelSale(saleId: string, reason?: string): Promise<strin
 // Apenas super admin: exclui a venda permanentemente, restaurando estoque e financeiro.
 // A regra é validada no banco (RPC delete_sale + RLS sales_delete_super_admin).
 export async function deleteSale(saleId: string): Promise<void> {
-  const { data: { user } } = await appwrite.auth.getUser();
+  const { data: { user } } = await supabase.auth.getUser();
   const { data: sale } = await db.from("sales").select("company_id").eq("id", saleId).maybeSingle();
 
   const { error } = await db.rpc("delete_sale", { _sale_id: saleId });
@@ -2117,64 +2448,89 @@ export async function deleteSale(saleId: string): Promise<void> {
 
 
 
-export async function finalizeOpenSale(saleId: string, paymentMethod?: string, expectedTotal?: number): Promise<string> {
+export async function finalizeOpenSale(
+  saleId: string,
+  paymentMethod?: string,
+  expectedTotal?: number,
+  payments?: SalePaymentInput[]
+): Promise<string> {
+  const dominant = (payments && payments.length > 0)
+    ? [...payments].sort((a, b) => Number(b.amount) - Number(a.amount))[0]
+    : null;
+  const legacyMethod = dominant?.method ?? paymentMethod ?? null;
+
   // 1. Finaliza o status da venda
   if (typeof expectedTotal === "number") {
     const { error: rpcErr } = await (db as any).rpc("finalize_sale_validated", {
       _sale_id: saleId,
-      _payment_method: paymentMethod ?? null,
+      _payment_method: legacyMethod,
       _expected_total: expectedTotal,
     });
     if (rpcErr) throw new Error(rpcErr.message || "Falha ao validar totais da venda");
   } else {
-    // Fallback (sem validação) — mantido para compatibilidade
     const { data: sale } = await db.from("sales").select("*").eq("id", saleId).single();
     if (!sale) throw new Error("Venda não encontrada");
-
-    const { error } = await db.from("sales").update({ 
+    const { error } = await db.from("sales").update({
       status: 'concluida',
-      payment_method: paymentMethod || sale.payment_method
+      payment_method: legacyMethod || sale.payment_method
     }).eq("id", saleId);
-    
     if (error) throw error;
   }
 
-  // 2. Busca dados atualizados da venda para sincronizar financeiro
+  // 2. Busca dados atualizados
   const { data: sale } = await db.from("sales").select("*").eq("id", saleId).single();
   if (!sale) return saleId;
 
-  // 3. Sincronizar financeiro (fluxo de caixa)
-  // Se não houver data de vencimento, consideramos venda à vista (pago)
-  if (!sale.due_date && sale.created_by) {
-    const finalTotal = typeof expectedTotal === "number" ? expectedTotal : sale.total;
-    
-    // Garantir que o valor da venda seja atualizado para o valor correto se estiver zerado
-    if (Number(sale.total) === 0 && finalTotal > 0) {
-      await db.from("sales").update({ total: finalTotal }).eq("id", saleId);
+  const finalTotal = typeof expectedTotal === "number" ? expectedTotal : Number(sale.total);
+  if (Number(sale.total) === 0 && finalTotal > 0) {
+    await db.from("sales").update({ total: finalTotal }).eq("id", saleId);
+  }
+
+  // 3a. Caminho multi-pagamento
+  if (payments && payments.length > 0) {
+    await saveSalePayments(sale.company_id, saleId, payments);
+    await db.from("payables").delete().eq("sale_id", saleId);
+    for (const p of payments) {
+      await createPayablesForPayment({
+        companyId: sale.company_id,
+        saleId,
+        customerId: sale.customer_id,
+        payment: p,
+        createdBy: sale.created_by,
+        notes: sale.notes ?? null,
+      });
     }
-    
-    // Cria ou atualiza transação de caixa
+    if (sale.created_by) {
+      await syncSaleMultiPaymentCashTransactions({
+        companyId: sale.company_id,
+        saleId,
+        userId: sale.created_by,
+        payments,
+        description: `Venda (finalizada) #${saleId.slice(0, 8)}`,
+      });
+    }
+    return saleId;
+  }
+
+  // 3b. Caminho legado (uma única forma de pagamento)
+  if (!sale.due_date && sale.created_by) {
     await syncSaleCashTransaction({
       companyId: sale.company_id,
       saleId: saleId,
       amount: finalTotal,
-      paymentMethod: paymentMethod || sale.payment_method || "dinheiro",
+      paymentMethod: legacyMethod || sale.payment_method || "dinheiro",
       userId: sale.created_by,
       description: `Venda (finalizada) #${saleId.slice(0, 8)}`
     });
-
-    // Garante que o payable correspondente (se existir) seja marcado como pago
     await db.from("payables").update({
       status: "pago",
       paid_at: new Date().toISOString().slice(0, 10),
       amount: finalTotal,
-      payment_method: paymentMethod || sale.payment_method || "dinheiro"
+      payment_method: legacyMethod || sale.payment_method || "dinheiro"
     }).eq("sale_id", saleId);
   } else if (sale.due_date) {
-    // Se for a prazo, garante que o payable existe em aberto
     const { data: existing } = await db.from("payables").select("id").eq("sale_id", saleId).maybeSingle();
     if (!existing) {
-      const finalTotal = typeof expectedTotal === "number" ? expectedTotal : sale.total;
       await db.from("payables").insert({
         company_id: sale.company_id,
         direction: "receber",
@@ -2184,12 +2540,12 @@ export async function finalizeOpenSale(saleId: string, paymentMethod?: string, e
         amount: finalTotal,
         due_date: sale.due_date,
         status: "aberto",
-        payment_method: paymentMethod || sale.payment_method || "dinheiro",
+        payment_method: legacyMethod || sale.payment_method || "dinheiro",
         created_by: sale.created_by
       });
     }
   }
-  
+
   return saleId;
 }
 
@@ -2235,7 +2591,7 @@ export async function upsertPayable(
 }
 
 export async function markPayablePaid(id: string, companyId?: string) {
-  const { data: { user } } = await appwrite.auth.getUser();
+  const { data: { user } } = await supabase.auth.getUser();
   const userId = user?.id;
 
   const { data: payable, error: fetchErr } = await db
@@ -2303,7 +2659,8 @@ export async function fetchTeam(companyId: string): Promise<MembershipWithProfil
   const { data: members, error } = await db
     .from("memberships")
     .select("*")
-    .eq("company_id", companyId);
+    .eq("company_id", companyId)
+    .eq("is_blocked", false);
   if (error) throw error;
   const list = (members ?? []) as Membership[];
   if (list.length === 0) return [];
@@ -2547,14 +2904,51 @@ export async function upsertDeliveryOrder(companyId: string, patch: Partial<Deli
     notes: patch.notes ?? null,
     updated_at: new Date().toISOString(),
   };
+  let saved: DeliveryOrder;
   if (patch.id) {
     const { data, error } = await db.from("delivery_orders").update(payload).eq("id", patch.id).select("*").single();
     if (error) throw error;
-    return data as DeliveryOrder;
+    saved = data as DeliveryOrder;
+  } else {
+    const { data, error } = await db.from("delivery_orders").insert(payload).select("*").single();
+    if (error) throw error;
+    saved = data as DeliveryOrder;
   }
-  const { data, error } = await db.from("delivery_orders").insert(payload).select("*").single();
-  if (error) throw error;
-  return data as DeliveryOrder;
+
+  // Sincroniza dados do cliente a cada pedido de delivery:
+  // - Atualiza endereço principal no cadastro do parceiro
+  // - Garante o endereço em partner_addresses (cria se novo)
+  if (saved.customer_id && saved.address && saved.address !== "Retirada no Local") {
+    try {
+      await db
+        .from("partners")
+        .update({ address: saved.address, updated_at: new Date().toISOString() })
+        .eq("id", saved.customer_id)
+        .eq("company_id", companyId);
+
+      const { data: existing } = await db
+        .from("partner_addresses")
+        .select("id")
+        .eq("partner_id", saved.customer_id)
+        .eq("company_id", companyId)
+        .ilike("address", saved.address)
+        .limit(1);
+
+      if (!existing || existing.length === 0) {
+        await db.from("partner_addresses").insert({
+          company_id: companyId,
+          partner_id: saved.customer_id,
+          address: saved.address,
+          is_default: false,
+        });
+      }
+    } catch (e) {
+      console.warn("[delivery] falha ao sincronizar dados do cliente", e);
+    }
+  }
+
+  return saved;
+
 }
 
 export async function deleteDeliveryOrder(id: string) {
@@ -2637,17 +3031,72 @@ export async function fetchPaymentMethods(companyId: string): Promise<PaymentMet
   return (data ?? []) as PaymentMethod[];
 }
 
+export async function paymentMethodHasSales(methodId: string, companyId: string): Promise<boolean> {
+  const { data: pm } = await db
+    .from("payment_methods")
+    .select("name")
+    .eq("id", methodId)
+    .maybeSingle();
+  const { count: byId } = await db
+    .from("sale_payments")
+    .select("id", { count: "exact", head: true })
+    .eq("payment_method_id", methodId);
+  if ((byId ?? 0) > 0) return true;
+  if (pm?.name) {
+    const { count: byName } = await db
+      .from("sale_payments")
+      .select("id", { count: "exact", head: true })
+      .eq("company_id", companyId)
+      .eq("method", pm.name);
+    if ((byName ?? 0) > 0) return true;
+  }
+  return false;
+}
+
+export async function fetchPaymentMethodsUsage(companyId: string): Promise<Record<string, boolean>> {
+  const { data: methods } = await db
+    .from("payment_methods")
+    .select("id,name")
+    .eq("company_id", companyId);
+  if (!methods?.length) return {};
+  const { data: pays } = await db
+    .from("sale_payments")
+    .select("payment_method_id,method")
+    .eq("company_id", companyId);
+  const usedIds = new Set<string>();
+  const usedNames = new Set<string>();
+  for (const p of pays ?? []) {
+    if (p.payment_method_id) usedIds.add(p.payment_method_id);
+    if (p.method) usedNames.add(p.method);
+  }
+  const result: Record<string, boolean> = {};
+  for (const m of methods) {
+    result[m.id] = usedIds.has(m.id) || usedNames.has(m.name);
+  }
+  return result;
+}
+
 export async function upsertPaymentMethod(
   companyId: string,
   patch: Partial<PaymentMethod> & { id?: string; name: string }
 ): Promise<PaymentMethod> {
-  const payload = {
+  const payload: any = {
     company_id: companyId,
     name: patch.name,
     requires_due_date: patch.requires_due_date ?? false,
     active: patch.active ?? true,
+    auto_issue_nfce: patch.auto_issue_nfce ?? false,
   };
   if (patch.id) {
+    const used = await paymentMethodHasSales(patch.id, companyId);
+    if (used) {
+      const superAdmin = await isSuperAdmin();
+      if (!superAdmin) {
+        throw new Error(
+          "Esta forma de pagamento já foi usada em vendas e só pode ser alterada por um super administrador."
+        );
+      }
+    }
     const { data, error } = await db.from("payment_methods").update(payload).eq("id", patch.id).select("*").single();
     if (error) throw error;
     return data as PaymentMethod;
@@ -2657,10 +3106,22 @@ export async function upsertPaymentMethod(
   return data as PaymentMethod;
 }
 
-export async function deletePaymentMethod(id: string) {
+export async function deletePaymentMethod(id: string, companyId?: string) {
+  if (companyId) {
+    const used = await paymentMethodHasSales(id, companyId);
+    if (used) {
+      const superAdmin = await isSuperAdmin();
+      if (!superAdmin) {
+        throw new Error(
+          "Esta forma de pagamento já foi usada em vendas e só pode ser excluída por um super administrador."
+        );
+      }
+    }
+  }
   const { error } = await db.from("payment_methods").delete().eq("id", id);
   if (error) throw error;
 }
+
 
 // ---------- Cash Management ----------
 export async function fetchCurrentOpenRegister(companyId: string, userId: string) {
@@ -2763,6 +3224,58 @@ export async function syncSaleCashTransaction(input: {
   }
 }
 
+function mapPaymentMethodToCash(method: string): "CASH" | "PIX" | "CREDIT_CARD" | "DEBIT_CARD" | "BOLETO" {
+  const pmName = (method || "dinheiro").toLowerCase();
+  if (pmName.includes("pix")) return "PIX";
+  if (pmName.includes("boleto")) return "BOLETO";
+  const hasCard = pmName.includes("cartão") || pmName.includes("catão") || pmName.includes("cartao");
+  if (pmName.includes("débito") || pmName.includes("debito")) return "DEBIT_CARD";
+  if (pmName.includes("crédito") || pmName.includes("credito")) return "CREDIT_CARD";
+  if (hasCard) return "CREDIT_CARD";
+  return "CASH";
+}
+
+/**
+ * Sincroniza N transações de caixa (uma por forma de pagamento à vista)
+ * para uma venda multi-pagamento. Remove transações antigas SALE da venda
+ * e insere uma por pagamento sem vencimento (à vista), incluindo cartões.
+ */
+export async function syncSaleMultiPaymentCashTransactions(input: {
+  companyId: string;
+  saleId: string;
+  userId: string;
+  payments: SalePaymentInput[];
+  description: string;
+}) {
+  const currentRegister = await fetchCurrentOpenRegister(input.companyId, input.userId);
+  if (!currentRegister) {
+    console.warn("Nenhum caixa aberto para este usuário. As transações de caixa não serão criadas.");
+    return;
+  }
+
+  // Remove transações SALE prévias desta venda (em qualquer caixa)
+  await db
+    .from("cash_transactions")
+    .delete()
+    .eq("reference_id", input.saleId)
+    .eq("category", "SALE");
+
+  const cashPayments = input.payments.filter((p) => !p.first_due_date && Number(p.amount) > 0);
+  for (const p of cashPayments) {
+    await addCashTransaction({
+      companyId: input.companyId,
+      cashRegisterId: currentRegister.id,
+      type: "IN",
+      category: "SALE",
+      amount: Number(p.amount),
+      paymentMethod: mapPaymentMethodToCash(p.method),
+      description: `${input.description} - ${p.method}`,
+      referenceId: input.saleId,
+      userId: input.userId,
+    });
+  }
+}
+
 export async function fetchPartnerAddresses(companyId: string, partnerId: string): Promise<PartnerAddress[]> {
   const { data, error } = await db
     .from("partner_addresses")
@@ -2786,5 +3299,110 @@ export async function upsertPartnerAddress(companyId: string, address: Partial<P
 
 export async function deletePartnerAddress(id: string) {
   const { error } = await db.from("partner_addresses").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ---------- Quotations ----------
+export async function fetchQuotations(companyId: string) {
+  const { data, error } = await db
+    .from("quotations")
+    .select("*")
+    .eq("company_id", companyId)
+    .order("number", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function createQuotation(quotation: any) {
+  const { data, error } = await db
+    .from("quotations")
+    .insert(quotation)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateQuotation(id: string, quotation: any) {
+  const { data, error } = await db
+    .from("quotations")
+    .update({ ...quotation, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteQuotation(id: string) {
+  const { error } = await db.from("quotations").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ---------- User Tasks / Agenda ----------
+export async function fetchUserTasks(companyId: string, userId?: string | null, filters?: { status?: string, start?: string, end?: string }) {
+  let query = db
+    .from("user_tasks")
+    .select("*")
+    .eq("company_id", companyId);
+
+  if (userId) {
+    query = query.eq("user_id", userId);
+  }
+
+  if (filters?.status) query = query.eq("status", filters.status);
+  if (filters?.start) query = query.gte("due_at", filters.start);
+  if (filters?.end) query = query.lte("due_at", filters.end);
+
+  const { data, error } = await query.order("due_at", { ascending: true });
+  if (error) throw error;
+
+  const rows = (data ?? []) as any[];
+  const ids = Array.from(new Set(rows.map((r) => r.user_id).filter(Boolean)));
+  if (ids.length) {
+    const { data: profs } = await db.from("profiles").select("id, name, email").in("id", ids);
+    const map = new Map<string, any>((profs ?? []).map((p: any) => [p.id as string, p]));
+    rows.forEach((r) => {
+      const p = map.get(r.user_id);
+      if (p) r.profile = { name: p.name, email: p.email };
+    });
+  }
+  return rows as import("./db-types").UserTask[];
+}
+
+export async function createUserTask(task: Omit<import("./db-types").UserTask, "id" | "created_at" | "updated_at"> | Omit<import("./db-types").UserTask, "id" | "created_at" | "updated_at">[]) {
+  const tasks = Array.isArray(task) ? task : [task];
+
+  const { data, error } = await db
+    .from("user_tasks")
+    .insert(tasks)
+    .select("*");
+
+  if (error) {
+    console.error("DB: createUserTask error:", error);
+    throw error;
+  }
+  return data as import("./db-types").UserTask[];
+}
+
+
+
+export async function updateUserTask(id: string, task: Partial<import("./db-types").UserTask>) {
+  console.log("DB: updateUserTask called for ID:", id, "data:", task);
+  const { data, error } = await db
+    .from("user_tasks")
+    .update(task)
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) {
+    console.error("DB: updateUserTask error:", error);
+    throw error;
+  }
+  return data as import("./db-types").UserTask;
+}
+
+export async function deleteUserTask(id: string) {
+  const { error } = await db.from("user_tasks").delete().eq("id", id);
   if (error) throw error;
 }

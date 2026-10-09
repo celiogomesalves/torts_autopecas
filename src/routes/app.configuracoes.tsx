@@ -3,7 +3,7 @@ import { PageHeading } from "@/components/page-header";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/lib/auth-context";
 import {
   fetchCompanyRoles,
@@ -14,9 +14,13 @@ import {
   countMembersByRoles,
   isSuperAdmin,
   hasPermission,
+  fetchCompany,
 } from "@/lib/db";
 import type { Company, CompanyRoleWithPermissions, PermissionAction } from "@/lib/db-types";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { FiscalSettingsTab } from "@/components/fiscal-settings-tab";
+import { AgendaSettingsTab } from "@/components/agenda-settings-tab";
+import { SensitiveSettingsWarning } from "@/components/sensitive-settings-warning";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -71,7 +75,7 @@ import {
   Save,
   ScanBarcode,
   Bot,
-  KeyRound,
+  
   CheckCircle2,
   XCircle,
   Receipt,
@@ -101,11 +105,29 @@ import {
   Info,
   Activity,
   Phone,
+  Printer,
+  Cloud,
+  Webhook,
+  Calendar,
 } from "lucide-react";
-import { maskPhone } from "@/lib/masks";
+
+import { maskPhone, maskCpfCnpj } from "@/lib/masks";
 import { LabelTemplatesConfig } from "@/components/label-templates-config";
+import { DriveSettingsTab } from "@/components/drive-settings-tab";
+import { N8nPayloadTab } from "@/components/n8n-payload-tab";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { receiptStyle } from "@/lib/receipt-style";
+import { qzEnabled, qzPrinterName, qzPrintHtml80mm } from "@/lib/qz-print";
+import { UsbPrintSettings } from "@/components/usb-print-settings";
+import { QzTraySettings } from "@/components/qz-tray-settings";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Usb, TestTube2, Loader2 } from "lucide-react";
 
 export const Route = createFileRoute("/app/configuracoes")({
   head: () => ({ meta: [{ title: "Configurações — AutoPeças ERP" }] }),
@@ -125,6 +147,10 @@ const MODULES: Array<{ key: string; label: string }> = [
   { key: "conciliacao", label: "Conciliação bancária" },
   { key: "delivery", label: "Delivery" },
   { key: "notas-fiscais", label: "Notas Fiscais" },
+  { key: "notas-fiscais-emitir", label: "Notas Fiscais - Emitir NFC-e" },
+  { key: "notas-fiscais-imprimir", label: "Notas Fiscais - Imprimir / Reimprimir DANFE" },
+  { key: "notas-fiscais-cancelar", label: "Notas Fiscais - Cancelar NFC-e" },
+  { key: "notas-fiscais-consultar", label: "Notas Fiscais - Consultar SEFAZ" },
   { key: "produtos", label: "Produtos" },
   { key: "categorias", label: "Categorias" },
   { key: "marcas", label: "Marcas" },
@@ -132,6 +158,8 @@ const MODULES: Array<{ key: string; label: string }> = [
   { key: "localizacoes", label: "Localizações de Estoque" },
   { key: "parceiros", label: "Clientes & Fornecedores" },
   { key: "formas-pagamento", label: "Formas de pagamento" },
+  { key: "agenda", label: "Agenda (Tarefas e Compromissos)" },
+
   { key: "relatorios", label: "Relatórios" },
   { key: "equipe", label: "Equipe" },
   { key: "gerenciar_equipes_contagem", label: "Gerenciar Equipes de Contagem" },
@@ -143,7 +171,7 @@ const MODULE_GROUPS = [
   {
     name: "Operacional",
     icon: ShoppingCart,
-    modules: ["dashboard", "dashboard_valores", "vendas", "delivery", "parceiros"],
+    modules: ["dashboard", "dashboard_valores", "vendas", "delivery", "parceiros", "agenda"],
   },
   {
     name: "Produtos & Estoque",
@@ -166,7 +194,13 @@ const MODULE_GROUPS = [
   {
     name: "Fiscal",
     icon: FileText,
-    modules: ["notas-fiscais"],
+    modules: [
+      "notas-fiscais",
+      "notas-fiscais-emitir",
+      "notas-fiscais-imprimir",
+      "notas-fiscais-cancelar",
+      "notas-fiscais-consultar",
+    ],
   },
   {
     name: "Administrativo",
@@ -184,16 +218,31 @@ const ACTION_LABEL: Record<PermissionAction, string> = {
 };
 
 const LLM_MODELS = [
-  { value: "google/gemini-3-flash-preview", label: "Gemini 3 Flash" },
+  // Google Gemini
+  { value: "google/gemini-3-flash-preview", label: "Gemini 3 Flash (preview)" },
+  { value: "google/gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite (preview)" },
+  { value: "google/gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+  { value: "google/gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (preview)" },
+  { value: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
   { value: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { value: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  // OpenAI GPT
+  { value: "openai/gpt-5-nano", label: "GPT-5 Nano" },
   { value: "openai/gpt-5-mini", label: "GPT-5 Mini" },
   { value: "openai/gpt-5", label: "GPT-5" },
+  { value: "openai/gpt-5.2", label: "GPT-5.2" },
+  { value: "openai/gpt-5.4-nano", label: "GPT-5.4 Nano" },
+  { value: "openai/gpt-5.4-mini", label: "GPT-5.4 Mini" },
+  { value: "openai/gpt-5.4", label: "GPT-5.4" },
+  { value: "openai/gpt-5.4-pro", label: "GPT-5.4 Pro" },
+  { value: "openai/gpt-5.5", label: "GPT-5.5" },
+  { value: "openai/gpt-5.5-pro", label: "GPT-5.5 Pro" },
+  // Transcrição (OpenAI)
   { value: "openai/gpt-4o-transcribe", label: "GPT-4o Transcribe" },
   { value: "openai/gpt-4o-mini-transcribe", label: "GPT-4o Mini Transcribe" },
   { value: "openai/whisper-1", label: "Whisper 1" },
-  { value: "custom/n8n-webhook", label: "Webhook n8n (Customizado)" },
 ];
+
 
 const normalizeAiToken = (value: string) => {
   const trimmed = value.trim();
@@ -207,11 +256,18 @@ function SettingsPage() {
   const qc = useQueryClient();
   const [activeTab, setActiveTab] = usePersistedState("configuracoes:tab", "financial");
 
+  // Permite deep-link ?tab=drive (vindo do callback OAuth)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const t = new URL(window.location.href).searchParams.get("tab");
+    if (t) setActiveTab(t);
+  }, [setActiveTab]);
+
   const roleQ = useQuery({
     queryKey: ["my-membership", user?.id, currentCompanyId],
     enabled: !!user && !!currentCompanyId,
     queryFn: async () => {
-      const { data } = await appwrite
+      const { data } = await supabase
         .from("memberships")
         .select("role")
         .eq("user_id", user!.id)
@@ -266,7 +322,7 @@ function SettingsPage() {
             <ShieldCheck className="size-4" /> Perfis & Permissões
           </TabsTrigger>
           <TabsTrigger value="integrations" className="gap-2">
-            <Bot className="size-4" /> Integrações (n8n, IA)
+            <Bot className="size-4" /> Integrações
           </TabsTrigger>
           <TabsTrigger
             value="printing"
@@ -275,7 +331,7 @@ function SettingsPage() {
               qc.prefetchQuery({
                 queryKey: ["company-detail", currentCompanyId],
                 queryFn: async () => {
-                  const { data, error } = await appwrite
+                  const { data, error } = await supabase
                     .from("companies")
                     .select("id, name, cnpj")
                     .eq("id", currentCompanyId!)
@@ -288,16 +344,30 @@ function SettingsPage() {
           >
             <Receipt className="size-4" /> Impressão
           </TabsTrigger>
+          <TabsTrigger value="fiscal" className="gap-2">
+            <FileText className="size-4" /> Fiscal (NFC-e)
+          </TabsTrigger>
+          <TabsTrigger value="drive" className="gap-2">
+            <Cloud className="size-4" /> Google Drive
+          </TabsTrigger>
           <TabsTrigger value="company" className="gap-2">
             <Building2 className="size-4" /> Empresa
           </TabsTrigger>
+          <TabsTrigger value="n8n" className="gap-2">
+            <Webhook className="size-4" /> Payload n8n
+          </TabsTrigger>
+          <TabsTrigger value="agenda" className="gap-2">
+            <Calendar className="size-4" /> Agenda
+          </TabsTrigger>
         </TabsList>
+
 
         <TabsContent value="financial" className="space-y-4">
           <FinancialTab />
         </TabsContent>
 
         <TabsContent value="integrations" className="space-y-4">
+          <SensitiveSettingsWarning area="integracoes" />
           <IntegrationsTab />
         </TabsContent>
 
@@ -309,10 +379,29 @@ function SettingsPage() {
           <PrintingTab />
         </TabsContent>
 
+        <TabsContent value="fiscal" className="space-y-4">
+          <SensitiveSettingsWarning area="fiscal" />
+          <FiscalSettingsTab />
+        </TabsContent>
+
+        <TabsContent value="drive" className="space-y-4">
+          <DriveSettingsTab companyId={currentCompanyId} />
+        </TabsContent>
+
         <TabsContent value="company" className="space-y-4">
+          <SensitiveSettingsWarning area="empresa" />
           <CompanyTab />
         </TabsContent>
+
+        <TabsContent value="n8n" className="space-y-4">
+          <N8nPayloadTab />
+        </TabsContent>
+
+        <TabsContent value="agenda" className="space-y-4">
+          <AgendaSettingsTab />
+        </TabsContent>
       </Tabs>
+
     </div>
   );
 }
@@ -325,9 +414,9 @@ function CompanyTab() {
   const companyQ = useQuery({
     queryKey: ["company-detail", cid],
     queryFn: async () => {
-      const { data, error } = await appwrite.from("companies").select("*").eq("id", cid).single();
-      if (error) throw error;
-      return data as unknown as Company;
+      const company = await fetchCompany(cid);
+      if (!company) throw new Error("Empresa não encontrada");
+      return company;
     },
     enabled: !!cid,
   });
@@ -335,7 +424,7 @@ function CompanyTab() {
   const fiscalQ = useQuery({
     queryKey: ["fiscal-settings", cid],
     queryFn: async () => {
-      const { data, error } = await appwrite
+      const { data, error } = await supabase
         .from("fiscal_settings")
         .select("*")
         .eq("company_id", cid)
@@ -375,37 +464,58 @@ function CompanyTab() {
 
   const saveMut = useMutation({
     mutationFn: async () => {
-      // Update company name/cnpj
-      const { error: compError } = await (appwrite.from("companies") as any)
-        .update({ name, cnpj, phone, zip_code: zipCode })
-        .eq("id", cid);
+      // Update company name/cnpj/telefone/CEP
+      const { data: updated, error: compError } = await (supabase.from("companies") as any)
+        .update({
+          name,
+          cnpj: cnpj || null,
+          phone: phone || null,
+          zip_code: zipCode || null,
+        })
+        .eq("id", cid)
+        .select("id,phone,zip_code");
       if (compError) throw compError;
+      if (!updated || updated.length === 0) {
+        throw new Error(
+          "Não foi possível salvar os dados da empresa. Verifique se você tem permissão de administrador.",
+        );
+      }
+
 
       // Upsert fiscal settings
-      const { data: existing } = await appwrite
+      const { data: existing } = await supabase
         .from("fiscal_settings")
         .select("company_id")
         .eq("company_id", cid)
         .maybeSingle();
 
       if (existing) {
-        const { error: fiscalError } = await appwrite
+        const { error: fiscalError } = await supabase
           .from("fiscal_settings")
           .update({
             razao_social: razaoSocial,
             cnpj,
             ie,
             endereco,
+            telefone: phone || null,
+            cep: zipCode || null,
             updated_at: new Date().toISOString(),
           })
           .eq("company_id", cid);
         if (fiscalError) throw fiscalError;
       } else {
-        const { error: fiscalError } = await appwrite
-          .from("fiscal_settings")
-          .insert({ company_id: cid, razao_social: razaoSocial, cnpj, ie, endereco });
+        const { error: fiscalError } = await supabase.from("fiscal_settings").insert({
+          company_id: cid,
+          razao_social: razaoSocial,
+          cnpj,
+          ie,
+          endereco,
+          telefone: phone || null,
+          cep: zipCode || null,
+        });
         if (fiscalError) throw fiscalError;
       }
+
     },
     onSuccess: () => {
       toast.success("Dados da empresa atualizados");
@@ -473,8 +583,8 @@ function CompanyTab() {
                   <Hash className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
                   <Input
                     id="comp_cnpj"
-                    value={cnpj}
-                    onChange={(e) => setCnpj(e.target.value)}
+                    value={maskCpfCnpj(cnpj)}
+                    onChange={(e) => setCnpj(maskCpfCnpj(e.target.value))}
                     className="pl-9"
                     placeholder="00.000.000/0000-00"
                   />
@@ -1175,9 +1285,9 @@ function FinancialTab() {
   const { data: companySettings, isLoading } = useQuery({
     queryKey: ["company-settings", cid],
     queryFn: async () => {
-      const { data, error } = await appwrite
+      const { data, error } = await supabase
         .from("company_settings")
-        .select("*")
+        .select("company_id, cashflow_start_date, updated_at, updated_by, barcode_scanner_enabled, ai_enabled, ai_model, ai_connection_validated, ai_validated_at, barcode_label_config, stock_code_auto_generate, stock_code_prefix, profit_margin, allow_public_search, public_search_start_time, public_search_end_time, network_access_ttl_days, default_ncm, auto_logout_enabled, auto_logout_time, force_logout_at, last_forced_logout_at, accounting_name, accounting_email")
         .eq("company_id", cid)
         .maybeSingle();
 
@@ -1205,7 +1315,9 @@ function FinancialTab() {
   const [networkAccessTtl, setNetworkAccessTtl] = useState<number>(30);
   const [stockPrefix, setStockPrefix] = useState("EST");
   const [stockAutoGenerate, setStockAutoGenerate] = useState(true);
+  const [defaultNcm, setDefaultNcm] = useState("");
   const [isSavingPrefix, setIsSavingPrefix] = useState(false);
+
 
   useEffect(() => {
     if (companySettings) {
@@ -1222,12 +1334,14 @@ function FinancialTab() {
       setNetworkAccessTtl(Number((companySettings as any).network_access_ttl_days) || 30);
       setStockPrefix(companySettings.stock_code_prefix || "EST");
       setStockAutoGenerate(companySettings.stock_code_auto_generate !== false);
+      setDefaultNcm(((companySettings as any).default_ncm || "").toString());
     }
+
   }, [companySettings]);
 
   const updateMut = useMutation({
     mutationFn: async (val: number) => {
-      const { error } = await appwrite
+      const { error } = await supabase
         .from("company_settings")
         .upsert({
           company_id: cid,
@@ -1245,7 +1359,7 @@ function FinancialTab() {
 
   const updateCashflowMut = useMutation({
     mutationFn: async (val: string) => {
-      const { error } = await appwrite
+      const { error } = await supabase
         .from("company_settings")
         .upsert({
           company_id: cid,
@@ -1263,7 +1377,7 @@ function FinancialTab() {
 
   const updateBarcodeMut = useMutation({
     mutationFn: async (enabled: boolean) => {
-      const { error } = await appwrite
+      const { error } = await supabase
         .from("company_settings")
         .upsert({
           company_id: cid,
@@ -1373,7 +1487,7 @@ function FinancialTab() {
                 size="sm"
                 variant="outline"
                 onClick={() => {
-                  appwrite
+                  supabase
                     .from("company_settings")
                     .upsert({ company_id: cid, stock_code_prefix: stockPrefix })
                     .then(() => toast.success("Prefixo salvo"));
@@ -1383,99 +1497,52 @@ function FinancialTab() {
               </Button>
             </div>
           </div>
+
+          <div className="space-y-4 border-t pt-6">
+            <div className="flex items-start gap-3">
+              <Tags className="size-5 text-brand-orange mt-1" />
+              <div>
+                <Label>NCM padrão</Label>
+                <p className="text-xs text-muted-foreground">
+                  Usado automaticamente quando a categoria selecionada não possuir NCM cadastrado.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <Input
+                value={defaultNcm}
+                onChange={(e) => setDefaultNcm(e.target.value.replace(/\D/g, "").slice(0, 8))}
+                className="max-w-[160px]"
+                placeholder="00000000"
+                inputMode="numeric"
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  if (defaultNcm && defaultNcm.length !== 8) {
+                    toast.error("NCM deve conter 8 dígitos");
+                    return;
+                  }
+                  const { error } = await supabase
+                    .from("company_settings")
+                    .upsert({ company_id: cid, default_ncm: defaultNcm || null } as any);
+                  if (error) {
+                    toast.error("Erro ao salvar: " + error.message);
+                    return;
+                  }
+                  toast.success("NCM padrão salvo");
+                  qc.invalidateQueries({ queryKey: ["company-settings", cid] });
+                }}
+              >
+                Salvar
+              </Button>
+            </div>
+          </div>
+
         </div>
       </Card>
     </div>
-  );
-}
-
-function WebhookTestDialog({ webhookUrl }: { webhookUrl: string }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("Pastilha de Freio");
-  const [brand, setBrand] = useState("Bosch");
-  const [result, setResult] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-
-  const handleTest = async () => {
-    if (!webhookUrl) {
-      toast.error("Configure a URL do webhook primeiro");
-      return;
-    }
-    setLoading(true);
-    setResult(null);
-    try {
-      const { data, error } = await appwrite.functions.invoke("product-ai-lookup", {
-        body: { query, brand, model: webhookUrl },
-      });
-      if (error) throw error;
-      setResult(data);
-    } catch (e: any) {
-      setResult({ ok: false, error: e.message });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="gap-2">
-          <Activity className="size-4" /> Validar JSON
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Teste de Webhook n8n</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4 py-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Produto Exemplo</Label>
-              <Input value={query} onChange={(e) => setQuery(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label>Marca Exemplo</Label>
-              <Input value={brand} onChange={(e) => setBrand(e.target.value)} />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground uppercase font-bold">
-              JSON Enviado ao n8n
-            </Label>
-            <pre className="p-3 bg-slate-900 text-slate-100 rounded-md text-[10px] overflow-x-auto font-mono">
-              {JSON.stringify({ query, brand }, null, 2)}
-            </pre>
-          </div>
-
-          <Button onClick={handleTest} disabled={loading || !webhookUrl} className="w-full">
-            {loading ? "Chamando Webhook..." : "Executar Teste de Formato"}
-          </Button>
-
-          {result && (
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground uppercase font-bold">
-                JSON Recebido do n8n (Processado)
-              </Label>
-              <pre
-                className={cn(
-                  "p-3 rounded-md text-[10px] overflow-x-auto font-mono",
-                  result.ok
-                    ? "bg-green-900 text-green-50 border border-green-700"
-                    : "bg-red-900 text-red-50 border border-red-700",
-                )}
-              >
-                {JSON.stringify(result, null, 2)}
-              </pre>
-              <p className="text-[10px] text-muted-foreground italic">
-                Nota: O sistema processa a resposta do n8n para garantir que os campos básicos
-                existam.
-              </p>
-            </div>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }
 
@@ -1487,9 +1554,9 @@ function IntegrationsTab() {
   const { data: companySettings, isLoading } = useQuery({
     queryKey: ["company-settings", cid],
     queryFn: async () => {
-      const { data, error } = await appwrite
+      const { data, error } = await supabase
         .from("company_settings")
-        .select("*")
+        .select("company_id, cashflow_start_date, updated_at, updated_by, barcode_scanner_enabled, ai_enabled, ai_model, ai_connection_validated, ai_validated_at, barcode_label_config, stock_code_auto_generate, stock_code_prefix, profit_margin, allow_public_search, public_search_start_time, public_search_end_time, network_access_ttl_days, default_ncm, auto_logout_enabled, auto_logout_time, force_logout_at, last_forced_logout_at, accounting_name, accounting_email")
         .eq("company_id", cid)
         .maybeSingle();
       if (error && error.code !== "PGRST116") throw error;
@@ -1508,15 +1575,21 @@ function IntegrationsTab() {
       setAiEnabled(Boolean(companySettings.ai_enabled));
       setAiModel(companySettings.ai_model || "google/gemini-3-flash-preview");
       setAiValidated(Boolean(companySettings.ai_connection_validated));
-      if (companySettings.ai_model === "custom/n8n-webhook")
-        setAiToken(companySettings.ai_token || "");
     }
   }, [companySettings]);
 
+  // ai_token lives in a column with restricted access; fetch via RPC for admins
+  useEffect(() => {
+    if (!cid) return;
+    (async () => {
+      const { data } = await supabase.rpc("get_company_ai_token" as any, { _company: cid });
+      if (typeof data === "string") setAiToken(data);
+    })();
+  }, [cid]);
+
   const updateAiMut = useMutation({
     mutationFn: async () => {
-      const normalizedToken =
-        aiModel === "custom/n8n-webhook" ? aiToken.trim() : normalizeAiToken(aiToken);
+      const normalizedToken = normalizeAiToken(aiToken);
       const payload: any = {
         company_id: cid,
         ai_enabled: aiEnabled,
@@ -1524,9 +1597,15 @@ function IntegrationsTab() {
         ai_connection_validated: aiValidated,
         updated_at: new Date().toISOString(),
       };
-      if (normalizedToken) payload.ai_token = normalizedToken;
-      const { error } = await appwrite.from("company_settings").upsert(payload);
+      const { error } = await supabase.from("company_settings").upsert(payload);
       if (error) throw error;
+      if (normalizedToken) {
+        const { error: tokErr } = await supabase.rpc("set_company_ai_token" as any, {
+          _company: cid,
+          _token: normalizedToken,
+        });
+        if (tokErr) throw tokErr;
+      }
     },
     onSuccess: () => {
       toast.success("Configuração salva");
@@ -1536,13 +1615,12 @@ function IntegrationsTab() {
 
   const testAiMut = useMutation({
     mutationFn: async () => {
-      const normalizedToken =
-        aiModel === "custom/n8n-webhook" ? aiToken.trim() : normalizeAiToken(aiToken);
-      const { data, error } = await appwrite.functions.invoke("test-ai-connection", {
+      const normalizedToken = normalizeAiToken(aiToken);
+      const { data, error } = await supabase.functions.invoke("test-ai-connection", {
         body: { model: aiModel, token: normalizedToken, company_id: cid },
       });
       if (error || !data?.ok) throw new Error(data?.error || "Falha na conexão");
-      await appwrite
+      await supabase
         .from("company_settings")
         .upsert({
           company_id: cid,
@@ -1569,16 +1647,16 @@ function IntegrationsTab() {
             <Bot className="size-5" />
           </div>
           <div>
-            <h3 className="text-lg font-bold">Integrações (n8n & IA)</h3>
+            <h3 className="text-lg font-bold">Integração com IA</h3>
             <p className="text-sm text-muted-foreground">
-              Configure automações de busca de produtos
+              Configure o modelo de IA usado nas buscas automáticas
             </p>
           </div>
         </div>
 
         <div className="space-y-4 rounded-md border p-4 bg-muted/30">
           <div className="flex items-center justify-between">
-            <Label className="text-base">Habilitar Busca Automática</Label>
+            <Label className="text-base">Habilitar IA</Label>
             <Checkbox
               checked={aiEnabled}
               onCheckedChange={(c) => {
@@ -1591,7 +1669,7 @@ function IntegrationsTab() {
           {aiEnabled && (
             <div className="grid gap-4 sm:grid-cols-2 pt-2">
               <div className="space-y-2">
-                <Label>Modelo / Serviço</Label>
+                <Label>Modelo</Label>
                 <Select
                   value={aiModel}
                   onValueChange={(v) => {
@@ -1612,17 +1690,11 @@ function IntegrationsTab() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>
-                  {aiModel === "custom/n8n-webhook" ? "URL do Webhook n8n" : "Token da API"}
-                </Label>
+                <Label>Token da API</Label>
                 <Input
                   value={aiToken}
                   onChange={(e) => setAiToken(e.target.value)}
-                  placeholder={
-                    aiModel === "custom/n8n-webhook"
-                      ? "https://n8n.exemplo.com/webhook/..."
-                      : "Token"
-                  }
+                  placeholder="Token"
                 />
               </div>
             </div>
@@ -1637,8 +1709,6 @@ function IntegrationsTab() {
               >
                 Salvar
               </Button>
-
-              {aiModel === "custom/n8n-webhook" && <WebhookTestDialog webhookUrl={aiToken} />}
 
               <Button
                 variant="outline"
@@ -1657,87 +1727,64 @@ function IntegrationsTab() {
             </div>
           )}
         </div>
-
-        <Card className="p-4 border-amber-200 bg-amber-50 mt-4">
-          <h4 className="font-semibold text-amber-800 flex items-center gap-2 mb-1">
-            <Info className="size-4" /> n8n Webhook
-          </h4>
-          <p className="text-xs text-amber-700">
-            Envio: <code>{"{ query, brand }"}</code>. Retorno esperado:{" "}
-            <code>{"{ name, details, originalCode, originalBrand, imageUrl, barcode }"}</code>.
-          </p>
-        </Card>
-      </Card>
-
-      <Card className="p-6">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="size-10 rounded-lg bg-amber-500/15 text-amber-500 flex items-center justify-center">
-            <KeyRound className="size-5" />
-          </div>
-          <div>
-            <h3 className="text-lg font-bold">Acesso à API para n8n</h3>
-            <p className="text-sm text-muted-foreground">Consulte seus dados de fora do sistema</p>
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground uppercase font-bold tracking-wider">
-              Seu ID de Empresa (Isolation ID)
-            </Label>
-            <div className="flex gap-2">
-              <Input value={cid} readOnly className="font-mono text-xs bg-muted/50" />
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  navigator.clipboard.writeText(cid);
-                  toast.success("ID copiado!");
-                }}
-              >
-                Copiar
-              </Button>
-            </div>
-            <p className="text-[10px] text-muted-foreground">
-              Este ID deve ser enviado no campo <code>company_id</code> de todas as requisições para
-              garantir que você veja apenas seus dados.
-            </p>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="space-y-2">
-              <Label className="text-xs font-semibold">Endpoint de Produtos</Label>
-              <div className="p-2 bg-muted rounded text-[10px] font-mono break-all">
-                .../functions/v1/n8n-products-query
-              </div>
-            </div>
-            <div className="space-y-2 md:col-span-2">
-              <Label className="text-xs font-semibold">
-                Endpoint de Clientes (Telegram / WhatsApp / Nome)
-              </Label>
-              <div className="p-2 bg-muted rounded text-[10px] font-mono break-all">
-                .../functions/v1/n8n-clients-query
-              </div>
-            </div>
-          </div>
-
-          <div className="p-3 border rounded-md bg-blue-50/50 border-blue-100">
-            <h4 className="text-xs font-bold text-blue-900 flex items-center gap-2 mb-1">
-              <Info className="size-3" /> Exemplo de Payload (POST)
-            </h4>
-            <pre className="text-[10px] text-blue-950 font-mono bg-white/80 p-2 rounded border border-blue-100 mt-2">
-              {`{
-  "company_id": "${cid}",
-  "search": "termo desejado",
-  "limit": 20
-}`}
-            </pre>
-          </div>
-        </div>
       </Card>
     </div>
   );
 }
+
+function ThermalTestButton() {
+  const { currentCompanyId } = useAuth();
+  const [testing, setTesting] = useState(false);
+
+  const runTest = async () => {
+    setTesting(true);
+    try {
+      const { usbEnabled, usbStoredDevice, usbPrintTest } = await import("@/lib/usb-print");
+      const { qzEnabled, qzPrinterName, qzPrintTestReceipt } = await import("@/lib/qz-print");
+
+      if (usbEnabled(currentCompanyId) && usbStoredDevice(currentCompanyId)) {
+        await usbPrintTest(currentCompanyId);
+        toast.success("Teste enviado via WebUSB — verifique se a impressora imprimiu.");
+        return;
+      }
+      if (qzEnabled(currentCompanyId) && qzPrinterName(currentCompanyId)) {
+        await qzPrintTestReceipt(qzPrinterName(currentCompanyId) || undefined);
+        toast.success("Teste enviado via QZ Tray — verifique se a impressora imprimiu.");
+        return;
+      }
+      toast.error(
+        "Nenhum método de impressão ativo. Habilite e pareie WebUSB ou conecte o QZ Tray antes de testar.",
+      );
+    } catch (e: any) {
+      toast.error(e?.message || "Falha ao imprimir o teste");
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <Card className="p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+      <div className="flex items-start gap-3">
+        <div className="size-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+          <TestTube2 className="size-4" />
+        </div>
+        <div className="min-w-0">
+          <div className="font-semibold">Testar impressão agora</div>
+          <p className="text-xs text-muted-foreground">
+            Envia um cupom de teste usando o método ativo (WebUSB ou QZ Tray) para
+            confirmar que a impressora responde antes de salvar.
+          </p>
+        </div>
+      </div>
+      <Button onClick={runTest} disabled={testing} className="gap-2 w-full sm:w-auto shrink-0">
+        {testing ? <Loader2 className="size-4 animate-spin" /> : <TestTube2 className="size-4" />}
+        Imprimir teste
+      </Button>
+    </Card>
+  );
+}
+
+
 
 function PrintingTab() {
   const { currentCompanyId } = useAuth();
@@ -1748,12 +1795,63 @@ function PrintingTab() {
         <TabsTrigger value="receipt" className="gap-2">
           <Receipt className="size-4" /> Cupom
         </TabsTrigger>
+        <TabsTrigger value="thermal" className="gap-2">
+          <Printer className="size-4" /> Impressora térmica
+        </TabsTrigger>
         <TabsTrigger value="labels" className="gap-2">
           <Tags className="size-4" /> Etiquetas
         </TabsTrigger>
       </TabsList>
       <TabsContent value="receipt" className="space-y-4">
         <ReceiptConfigTab />
+      </TabsContent>
+      <TabsContent value="thermal" className="space-y-4">
+        <div className="max-w-4xl space-y-4 pb-20">
+          <ThermalTestButton />
+          <Accordion
+            type="single"
+            collapsible
+            className="space-y-3"
+          >
+            <AccordionItem value="usb" className="border rounded-lg bg-card px-4">
+              <AccordionTrigger className="hover:no-underline">
+                <div className="flex items-center gap-3">
+                  <div className="size-9 rounded-lg bg-brand-orange/15 text-brand-orange flex items-center justify-center">
+                    <Usb className="size-4" />
+                  </div>
+                  <div className="text-left">
+                    <div className="font-semibold">Impressão direta USB (WebUSB)</div>
+                    <div className="text-xs text-muted-foreground">
+                      Recomendado — sem instalar nada
+                    </div>
+                  </div>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="pt-2">
+                <UsbPrintSettings />
+              </AccordionContent>
+            </AccordionItem>
+
+            <AccordionItem value="qz" className="border rounded-lg bg-card px-4">
+              <AccordionTrigger className="hover:no-underline">
+                <div className="flex items-center gap-3">
+                  <div className="size-9 rounded-lg bg-brand-orange/15 text-brand-orange flex items-center justify-center">
+                    <Printer className="size-4" />
+                  </div>
+                  <div className="text-left">
+                    <div className="font-semibold">Impressão local (QZ Tray)</div>
+                    <div className="text-xs text-muted-foreground">
+                      Alternativa — lista impressoras do sistema
+                    </div>
+                  </div>
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="pt-2">
+                <QzTraySettings />
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
+        </div>
       </TabsContent>
       <TabsContent value="labels" className="space-y-4">
         <LabelTemplatesConfig companyId={cid} />
@@ -1769,7 +1867,7 @@ function ReceiptConfigTab() {
   const companyQ = useQuery({
     queryKey: ["company-detail", cid],
     queryFn: async () => {
-      const { data, error } = await appwrite
+      const { data, error } = await supabase
         .from("companies")
         .select("id, name, cnpj")
         .eq("id", cid)
@@ -1793,6 +1891,9 @@ function ReceiptConfigTab() {
   const [showCustomerData, setShowCustomerData] = useState(false);
   const [showDetailedInstallments, setShowDetailedInstallments] = useState(false);
   const [receiptWidth, setReceiptWidth] = useState("280"); // em px
+  const [fontSizePx, setFontSizePx] = useState("12"); // tamanho base
+  const [lineHeight, setLineHeight] = useState("1.35"); // ~ LPI
+  const [boldStrength, setBoldStrength] = useState("0.4"); // reforço de negrito
   const [defaultPrinterReceipt, setDefaultPrinterReceipt] = useState("browser");
   const [defaultPrinterCashClosing, setDefaultPrinterCashClosing] = useState("browser");
 
@@ -1812,6 +1913,9 @@ function ReceiptConfigTab() {
       setShowCustomerData(!!parsed.showCustomerData);
       setShowDetailedInstallments(!!parsed.showDetailedInstallments);
       setReceiptWidth(parsed.receiptWidth || "280");
+      setFontSizePx(parsed.fontSizePx || "12");
+      setLineHeight(parsed.lineHeight || "1.35");
+      setBoldStrength(parsed.boldStrength ?? "0.4");
       setDefaultPrinterReceipt(parsed.defaultPrinterReceipt || "browser");
       setDefaultPrinterCashClosing(parsed.defaultPrinterCashClosing || "browser");
     } else {
@@ -1832,6 +1936,9 @@ function ReceiptConfigTab() {
         showCustomerData,
         showDetailedInstallments,
         receiptWidth,
+        fontSizePx,
+        lineHeight,
+        boldStrength,
         defaultPrinterReceipt,
         defaultPrinterCashClosing,
       }),
@@ -1840,9 +1947,10 @@ function ReceiptConfigTab() {
   };
 
   return (
-    <div className="max-w-4xl space-y-4 pb-20">
-      <div className="grid lg:grid-cols-2 gap-4">
-        <Card className="p-4 sm:p-6">
+    <div className="max-w-6xl space-y-4 pb-20">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <Card className="p-4 sm:p-6 min-w-0">
+
           <div className="flex items-center gap-3 mb-6">
             <div className="size-10 rounded-lg bg-brand-orange/15 text-brand-orange flex items-center justify-center">
               <Receipt className="size-5" />
@@ -1901,17 +2009,60 @@ function ReceiptConfigTab() {
 
             <div className="space-y-2 pt-2">
               <Label htmlFor="receipt_width">Largura do Cupom (px)</Label>
-              <div className="flex items-center gap-4">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                 <Input
                   id="receipt_width"
                   type="number"
                   value={receiptWidth}
                   onChange={(e) => setReceiptWidth(e.target.value)}
-                  className="w-24"
+                  className="w-24 shrink-0"
                 />
-                <span className="text-xs text-muted-foreground">
+                <span className="text-xs text-muted-foreground min-w-0">
                   Sugestão: 280 para 80mm, 200 para 58mm.
                 </span>
+              </div>
+
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-3 pt-2">
+              <div className="space-y-2">
+                <Label htmlFor="font_size">Tamanho da fonte (px)</Label>
+                <Input
+                  id="font_size"
+                  type="number"
+                  min={8}
+                  max={20}
+                  step={1}
+                  value={fontSizePx}
+                  onChange={(e) => setFontSizePx(e.target.value)}
+                />
+                <p className="text-[11px] text-muted-foreground">Padrão: 12. Maior = mais legível.</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="line_height">Espaçamento (linhas/pol.)</Label>
+                <Input
+                  id="line_height"
+                  type="number"
+                  min={1}
+                  max={2}
+                  step={0.05}
+                  value={lineHeight}
+                  onChange={(e) => setLineHeight(e.target.value)}
+                />
+                <p className="text-[11px] text-muted-foreground">1.2 compacto • 1.35 padrão • 1.6 espaçado.</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="bold_strength">Reforço do negrito</Label>
+                <Input
+                  id="bold_strength"
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.1}
+                  value={boldStrength}
+                  onChange={(e) => setBoldStrength(e.target.value)}
+                />
+                <p className="text-[11px] text-muted-foreground">0 sem reforço • 0.4 padrão • 0.7 térmica clara.</p>
               </div>
             </div>
 
@@ -1992,7 +2143,7 @@ function ReceiptConfigTab() {
               />
             </div>
 
-            <div className="flex flex-col sm:flex-row justify-between items-center gap-4 pt-4">
+            <div className="flex flex-col sm:flex-row sm:flex-wrap sm:justify-end items-stretch sm:items-center gap-2 pt-4 border-t border-border">
               <ReceiptPreview
                 settings={{
                   header,
@@ -2004,8 +2155,94 @@ function ReceiptConfigTab() {
                   showCustomerData,
                   showDetailedInstallments,
                   receiptWidth,
+                  fontSizePx,
+                  lineHeight,
+                  boldStrength,
                 }}
               />
+              <Button
+                variant="outline"
+                onClick={() => {
+                  const css = receiptStyle({
+                    widthPx: receiptWidth,
+                    fontSizePx,
+                    lineHeight,
+                    boldStrength,
+                  });
+                  const html = `<html><head><title>Teste de Impressão</title><style>${css}</style></head><body>
+                    <h2>TESTE DE IMPRESSÃO</h2>
+                    <div class="header-text">${header || "AUTO PEÇAS ERP"}</div>
+                    <div class="company-sub">Verificação das configurações</div>
+                    <div class="divider"></div>
+                    <div class="row"><span>Largura:</span><span>${receiptWidth}px</span></div>
+                    <div class="row"><span>Fonte:</span><span>${fontSizePx}px</span></div>
+                    <div class="row"><span>Espaçamento:</span><span>${lineHeight}</span></div>
+                    <div class="row"><span>Negrito:</span><span>${boldStrength}</span></div>
+                    <div class="row"><span>Data/Hora:</span><span>${new Date().toLocaleString("pt-BR")}</span></div>
+                    <div class="divider"></div>
+                    <table>
+                      <thead><tr><th>Item</th><th class="right">Valor</th></tr></thead>
+                      <tbody>
+                        <tr><td>1 UN x ÓLEO MOTOR 5W30</td><td class="right">R$ 55,00</td></tr>
+                        <tr><td>1 UN x FILTRO COMBUSTÍVEL</td><td class="right">R$ 20,00</td></tr>
+                        <tr><td>2 UN x PALHETA TRASEIRA</td><td class="right">R$ 30,00</td></tr>
+                      </tbody>
+                    </table>
+                    <div class="divider"></div>
+                    <div class="row big"><span>TOTAL:</span><span>R$ 105,00</span></div>
+                    <div class="divider"></div>
+                    <div class="footer">${footerMessage || "Obrigado pela preferência!"}</div>
+                  </body></html>`;
+
+                  const useQz = qzEnabled(cid) && qzPrinterName(cid);
+                  if (useQz) {
+                    qzPrintHtml80mm(html, { widthPx: receiptWidth || "280" })
+                      .then(() => toast.success("Teste enviado para a impressora (QZ Tray)."))
+                      .catch((e) => {
+                        toast.error(e?.message || "Falha no teste via QZ Tray.");
+                      });
+                    return;
+                  }
+                  // Fallback navegador: usa um iframe oculto para evitar
+                  // pop-up bloqueado e garantir que window.print() dispare
+                  // após o conteúdo carregar.
+                  const iframe = document.createElement("iframe");
+                  iframe.style.cssText =
+                    "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
+                  iframe.setAttribute("aria-hidden", "true");
+                  document.body.appendChild(iframe);
+                  const cleanup = () => {
+                    setTimeout(() => {
+                      try {
+                        document.body.removeChild(iframe);
+                      } catch {
+                        /* noop */
+                      }
+                    }, 1000);
+                  };
+                  iframe.onload = () => {
+                    try {
+                      const w = iframe.contentWindow;
+                      if (!w) {
+                        toast.error("Falha ao abrir a janela de impressão.");
+                        cleanup();
+                        return;
+                      }
+                      w.focus();
+                      w.print();
+                      w.addEventListener?.("afterprint", cleanup, { once: true });
+                      setTimeout(cleanup, 5000);
+                    } catch {
+                      toast.error("Falha ao imprimir teste.");
+                      cleanup();
+                    }
+                  };
+                  iframe.srcdoc = html;
+                }}
+                className="w-full sm:w-auto gap-2"
+              >
+                <Printer className="size-4" /> Imprimir Teste
+              </Button>
               <Button onClick={save} className="w-full sm:w-auto gap-2">
                 <Save className="size-4" /> Salvar Configurações
               </Button>
@@ -2013,7 +2250,7 @@ function ReceiptConfigTab() {
           </div>
         </Card>
 
-        <div className="hidden lg:block">
+        <div className="hidden xl:block">
           <div className="sticky top-6">
             <div className="text-center mb-2">
               <Badge variant="outline">Prévia em tempo real</Badge>
@@ -2030,6 +2267,9 @@ function ReceiptConfigTab() {
                   showCustomerData,
                   showDetailedInstallments,
                   receiptWidth,
+                  fontSizePx,
+                  lineHeight,
+                  boldStrength,
                 }}
               />
             </div>
@@ -2066,7 +2306,7 @@ function ReceiptPreviewContent({ settings }: { settings: any }) {
   const fiscalQ = useQuery({
     queryKey: ["fiscal-settings", currentCompanyId],
     queryFn: async () => {
-      const { data } = await appwrite
+      const { data } = await supabase
         .from("fiscal_settings")
         .select("*")
         .eq("company_id", currentCompanyId!)
@@ -2171,7 +2411,17 @@ function ReceiptPreviewContent({ settings }: { settings: any }) {
 
       <div className="mt-4 text-center border-t border-dashed border-black pt-2">
         <div className="text-[10px]">{settings.footerMessage}</div>
-        <div className="text-[8px] mt-2">Gerado em {new Date().toLocaleString("pt-BR")}</div>
+      </div>
+
+      <div className="mt-3 pt-2 border-t border-dashed border-black text-center">
+        <div className="text-[11px] font-bold">Faça sua avaliação</div>
+        <div className="text-[10px] mb-1">Conte-nos como foi a sua experiência</div>
+        <img
+          src="/__l5e/assets-v1/39befd4c-2c54-4182-b44d-7642d3876149/google-review-qr.png"
+          alt="QR Avaliação"
+          className="mx-auto"
+          style={{ width: 110, height: 110 }}
+        />
       </div>
     </div>
   );

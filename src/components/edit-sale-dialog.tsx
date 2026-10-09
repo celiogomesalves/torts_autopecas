@@ -1,13 +1,23 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogFooter,
+  DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -16,7 +26,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Trash2, Plus, Minus, Search } from "lucide-react";
+import { Trash2, Plus, Minus, AlertTriangle } from "lucide-react";
 import { brl, parseCurrencyInput, formatCurrencyInput } from "@/lib/format";
 import { toast } from "sonner";
 
@@ -29,31 +39,68 @@ interface CartItem {
   stock: number;
 }
 
+export interface EditSalePayload {
+  items: CartItem[];
+  discount: number;
+  reason: string;
+  customer_id: string | null;
+  payment_method: string | null;
+  due_date: string | null;
+  notes: string | null;
+}
+
 interface EditSaleDialogProps {
   sale: any;
   isOpen: boolean;
   onClose: () => void;
-  onSave: (items: CartItem[], discount: number, reason: string) => void;
+  onSave: (payload: EditSalePayload) => void;
   products: any[];
+  partners?: { id: string; name: string }[];
+  paymentMethods?: { id: string; name: string; requires_due_date?: boolean }[];
+  isSaving?: boolean;
 }
 
-export function EditSaleDialog({ sale, isOpen, onClose, onSave, products }: EditSaleDialogProps) {
+export function EditSaleDialog({
+  sale,
+  isOpen,
+  onClose,
+  onSave,
+  products: _products,
+  partners = [],
+  paymentMethods = [],
+  isSaving,
+}: EditSaleDialogProps) {
   const [items, setItems] = useState<CartItem[]>([]);
   const [discountRaw, setDiscountRaw] = useState("0,00");
+  const [customerId, setCustomerId] = useState<string>("none");
+  const [paymentMethod, setPaymentMethod] = useState<string>("");
+  const [dueDate, setDueDate] = useState<string>("");
+  const [notes, setNotes] = useState("");
+  const [reason, setReason] = useState("");
 
   useEffect(() => {
     if (sale) {
       setItems(sale.items || []);
       setDiscountRaw(formatCurrencyInput(String(sale.discount || 0)));
+      setCustomerId(sale.customer_id || "none");
+      setPaymentMethod(sale.payment_method || "");
+      setDueDate(sale.due_date || "");
+      setNotes((sale.notes || "").replace(/^Edição:\s*/, ""));
+      setReason("");
     }
   }, [sale]);
+
+  const selectedMethod = useMemo(
+    () => paymentMethods.find((m) => m.name === paymentMethod),
+    [paymentMethods, paymentMethod],
+  );
 
   const updateQuantity = (productId: string, delta: number) => {
     setItems((prev) =>
       prev.map((item) => {
         if (item.product_id === productId) {
           const newQty = Math.max(0.1, item.quantity + delta);
-          if (newQty > item.stock) {
+          if (newQty > item.stock + item.quantity) {
             toast.error("Estoque insuficiente");
             return item;
           }
@@ -72,11 +119,22 @@ export function EditSaleDialog({ sale, isOpen, onClose, onSave, products }: Edit
   const discount = Math.min(parseCurrencyInput(discountRaw), subtotal);
   const total = Math.max(subtotal - discount, 0);
 
+  const requiresDueDate = selectedMethod?.requires_due_date;
+  const canSave =
+    items.length > 0 &&
+    reason.trim().length >= 3 &&
+    (!requiresDueDate || !!dueDate);
+
   return (
-    <Dialog open={isOpen} onOpenChange={(o) => !o && onClose()}>
+    <Dialog open={isOpen} onOpenChange={(o) => !o && !isSaving && onClose()}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Editar Itens da Venda {sale?.number ? `#${sale.number}` : ""}</DialogTitle>
+          <DialogTitle>
+            Editar Venda {sale?.number ? `#${sale.number}` : ""}
+          </DialogTitle>
+          <DialogDescription>
+            Alterações geram auditoria e ajustes automáticos em estoque, caixa e financeiro.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
@@ -139,7 +197,36 @@ export function EditSaleDialog({ sale, isOpen, onClose, onSave, products }: Edit
 
           <div className="grid grid-cols-2 gap-4 border-t pt-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">Desconto</label>
+              <Label>Cliente</Label>
+              <Select value={customerId} onValueChange={setCustomerId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Consumidor final" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Consumidor final</SelectItem>
+                  {partners.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Forma de pagamento</Label>
+              <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione" />
+                </SelectTrigger>
+                <SelectContent>
+                  {paymentMethods.map((m) => (
+                    <SelectItem key={m.id} value={m.name}>{m.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Desconto</Label>
               <Input
                 value={discountRaw}
                 onChange={(e) => {
@@ -154,7 +241,43 @@ export function EditSaleDialog({ sale, isOpen, onClose, onSave, products }: Edit
                 className="text-right"
               />
             </div>
-            <div className="space-y-1 text-right">
+
+            <div className="space-y-2">
+              <Label>Vencimento {requiresDueDate && <span className="text-destructive">*</span>}</Label>
+              <Input
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-2 col-span-2">
+              <Label>Observações</Label>
+              <Textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={2}
+                placeholder="Observações da venda"
+              />
+            </div>
+
+            <div className="space-y-2 col-span-2">
+              <Label>
+                Motivo da edição <span className="text-destructive">*</span>
+              </Label>
+              <Textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                rows={2}
+                placeholder="Descreva por que esta venda está sendo alterada (mín. 3 caracteres)"
+              />
+              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                <AlertTriangle className="size-3" />
+                O motivo ficará registrado na timeline da venda.
+              </p>
+            </div>
+
+            <div className="col-span-2 text-right space-y-1 border-t pt-3">
               <div className="text-sm text-muted-foreground">Subtotal: {brl(subtotal)}</div>
               {discount > 0 && (
                 <div className="text-sm text-muted-foreground">Desconto: - {brl(discount)}</div>
@@ -165,14 +288,24 @@ export function EditSaleDialog({ sale, isOpen, onClose, onSave, products }: Edit
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={onClose} disabled={isSaving}>
             Cancelar
           </Button>
           <Button
-            onClick={() => onSave(items, discount, sale?.editReason || "")}
-            disabled={items.length === 0}
+            onClick={() =>
+              onSave({
+                items,
+                discount,
+                reason: reason.trim(),
+                customer_id: customerId === "none" ? null : customerId,
+                payment_method: paymentMethod || null,
+                due_date: dueDate || null,
+                notes: notes.trim() || null,
+              })
+            }
+            disabled={!canSave || isSaving}
           >
-            Salvar Alterações
+            {isSaving ? "Salvando..." : "Salvar Alterações"}
           </Button>
         </DialogFooter>
       </DialogContent>

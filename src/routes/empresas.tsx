@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 import { fetchMyCompanies, createCompany, joinCompanyByCode } from "@/lib/db";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,7 @@ import { SmartPagination } from "@/components/smart-pagination";
 import { SearchInput } from "@/components/search-input";
 import { matchSearch } from "@/lib/utils";
 import { toast } from "sonner";
+import { maskCpfCnpj } from "@/lib/masks";
 
 export const Route = createFileRoute("/empresas")({
   head: () => ({ meta: [{ title: "Empresas — AutoPeças ERP" }] }),
@@ -72,7 +73,7 @@ function CompaniesPage() {
     try {
       const {
         data: { session },
-      } = await appwrite.auth.getSession();
+      } = await supabase.auth.getSession();
       if (session?.access_token) {
         console.log("Registrando acesso de rede para empresa:", companyId);
         const res = await fetch("/api/public/register-network-access", {
@@ -99,7 +100,7 @@ function CompaniesPage() {
   });
 
   const onLogout = async () => {
-    await appwrite.auth.signOut();
+    await supabase.auth.signOut();
     navigate({ to: "/login" });
   };
 
@@ -269,7 +270,7 @@ function CompaniesPage() {
               </div>
               <div className="space-y-2">
                 <Label>CNPJ (opcional)</Label>
-                <Input value={cnpj} onChange={(e) => setCnpj(e.target.value)} />
+                <Input value={cnpj} onChange={(e) => setCnpj(maskCpfCnpj(e.target.value))} placeholder="00.000.000/0000-00" />
               </div>
               <Button
                 type="submit"

@@ -1,11 +1,13 @@
 import { PageHeading } from "@/components/page-header";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
-import { fetchProducts, fetchMovements, fetchSales, fetchPayables } from "@/lib/db";
-import { appwrite } from "@/integrations/appwrite/client";
+import { fetchProducts, fetchMovements, fetchPayables } from "@/lib/db";
+import { supabase } from "@/integrations/supabase/client";
+import { initScrollReveal } from "@/lib/scroll-reveal";
 import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Package,
   AlertTriangle,
@@ -22,11 +24,43 @@ import {
   ShoppingCart,
   Plus,
   LayoutDashboard,
+  CheckCircle2,
+  Clock3,
 } from "lucide-react";
 import { brl } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Carousel, CarouselContent, CarouselItem } from "@/components/ui/carousel";
 import { Button } from "@/components/ui/button";
+import { fetchUserTasks } from "@/lib/db";
+
+function CardSkeleton() {
+  return (
+    <Card className="p-4 sm:p-5 bg-glass border border-white/5 shadow-lg relative overflow-hidden">
+      <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-white/5 to-transparent rounded-bl-full pointer-events-none opacity-50" />
+      <div className="flex items-start justify-between relative z-10">
+        <div className="space-y-2.5 w-full">
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-8 w-32" />
+        </div>
+        <Skeleton className="size-10 rounded-xl shrink-0" />
+      </div>
+    </Card>
+  );
+}
+
+function CardSkeletonMobile() {
+  return (
+    <Card className="p-4 h-full bg-glass border border-white/5 relative overflow-hidden">
+      <div className="flex items-start justify-between">
+        <div className="space-y-1.5 w-full">
+          <Skeleton className="h-2.5 w-20" />
+          <Skeleton className="h-6 w-24" />
+        </div>
+        <Skeleton className="size-9 rounded-lg shrink-0" />
+      </div>
+    </Card>
+  );
+}
 
 export const Route = createFileRoute("/app/")({
   component: Dashboard,
@@ -46,6 +80,7 @@ function isSameMonth(a: Date, b: Date) {
 function Dashboard() {
   const { currentCompanyId } = useAuth();
   const cid = currentCompanyId!;
+  const { user } = useAuth();
 
   const VALUES_KEY = `ap.showValues.${cid}`;
   const [showValues, setShowValues] = useState<boolean>(false);
@@ -54,7 +89,7 @@ function Dashboard() {
     queryKey: ["perm", "dashboard_valores", cid],
     enabled: !!cid,
     queryFn: async () => {
-      const { data, error } = await appwrite.rpc("has_permission", {
+      const { data, error } = await supabase.rpc("has_permission", {
         _company: cid,
         _module: "dashboard_valores",
         _action: "view",
@@ -90,7 +125,7 @@ function Dashboard() {
     queryKey: ["sales-month", cid, monthStartISO],
     enabled: !!cid,
     queryFn: async () => {
-      const { data, error } = await appwrite
+      const { data, error } = await supabase
         .from("sales")
         .select("id, total, created_at, status")
         .eq("company_id", cid)
@@ -110,7 +145,7 @@ function Dashboard() {
     queryFn: async () => {
       const ids = (monthSalesQ.data ?? []).map((s: any) => s.id);
       if (ids.length === 0) return [];
-      const { data, error } = await appwrite
+      const { data, error } = await supabase
         .from("sale_items")
         .select("product_id, quantity, unit_price, sale_id")
         .in("sale_id", ids);
@@ -120,13 +155,58 @@ function Dashboard() {
     staleTime: 30 * 1000, // 30 segundos
   });
 
-  // Vendas recentes (apenas para a listagem do dashboard)
-  const salesQ = useQuery({
-    queryKey: ["sales", cid],
-    queryFn: () => fetchSales(cid, 50),
+
+
+
+  // Início/fim do dia (BRT) — para buscar TODAS as vendas concluídas de hoje
+  const { todayStartISO, todayEndISO } = useMemo(() => {
+    const now = new Date();
+    const y = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(now);
+    const start = new Date(`${y}T00:00:00-03:00`);
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    return { todayStartISO: start.toISOString(), todayEndISO: end.toISOString() };
+  }, []);
+
+  const todaySalesQ = useQuery({
+    queryKey: ["sales-today", cid, todayStartISO],
     enabled: !!cid,
-    staleTime: 30 * 1000, // 30 segundos
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("sales")
+        .select("id, total, created_at, status, customer_id, created_by")
+        .eq("company_id", cid)
+        .eq("status", "concluida")
+        .gte("created_at", todayStartISO)
+        .lt("created_at", todayEndISO)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      const rows = data ?? [];
+      const userIds = Array.from(new Set(rows.map((s: any) => s.created_by).filter(Boolean)));
+      let profMap = new Map<string, any>();
+      if (userIds.length > 0) {
+        const { data: profs } = await supabase
+          .from("profiles")
+          .select("id, name")
+          .in("id", userIds as string[]);
+        profMap = new Map((profs ?? []).map((p: any) => [p.id, p]));
+      }
+      return rows.map((s: any) => ({
+        ...s,
+        profiles: s.created_by ? profMap.get(s.created_by) ?? null : null,
+      }));
+    },
+    staleTime: 30 * 1000,
   });
+
+  const upcomingTasksQ = useQuery({
+    queryKey: ["upcoming-tasks", cid, user?.id],
+    queryFn: () => fetchUserTasks(cid, user?.id!, { status: "pending", start: new Date().toISOString() }),
+    enabled: !!cid && !!user?.id,
+    staleTime: 60 * 1000,
+  });
+
+  const [todayPage, setTodayPage] = useState(1);
+  const TODAY_PAGE_SIZE = 10;
   const payablesQ = useQuery({
     queryKey: ["payables", cid],
     queryFn: () => fetchPayables(cid),
@@ -136,13 +216,32 @@ function Dashboard() {
 
   const products = productsQ.data ?? [];
   const movements = movementsQ.data ?? [];
-  const sales = (salesQ.data ?? []).filter((s) => s.status === "concluida");
+  const brDateKey = (d: Date) =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(d);
+  const todayBrKey = brDateKey(new Date());
+  const sales = todaySalesQ.data ?? [];
   const monthSales = monthSalesQ.data ?? [];
   const monthItems = monthSaleItemsQ.data ?? [];
   const payables = payablesQ.data ?? [];
 
+  const isLoadingCards =
+    permQ.isLoading ||
+    productsQ.isLoading ||
+    monthSalesQ.isLoading ||
+    monthSaleItemsQ.isLoading ||
+    upcomingTasksQ.isLoading ||
+    payablesQ.isLoading;
+
+  // Reinicializa o scroll-reveal após o carregamento dos dados, pois os elementos
+  // com .animate-on-scroll só entram no DOM depois que o estado de loading muda.
+  useEffect(() => {
+    if (isLoadingCards) return;
+    const t = setTimeout(() => initScrollReveal(), 50);
+    return () => clearTimeout(t);
+  }, [isLoadingCards]);
+
   const mask = (v: string | number) => (showValues && canSeeValues ? v : "••••••");
-  void VALUES_KEY;
+  void movements;
 
   const today = new Date();
 
@@ -154,7 +253,7 @@ function Dashboard() {
   }, [products]);
 
   const stats = useMemo(() => {
-    const sToday = monthSales.filter((s: any) => isSameDay(new Date(s.created_at), today));
+    const sToday = monthSales.filter((s: any) => brDateKey(new Date(s.created_at)) === todayBrKey);
     const totalToday = sToday.reduce((acc: number, s: any) => acc + Number(s.total), 0);
     const totalMonth = monthSales.reduce((acc: number, s: any) => acc + Number(s.total), 0);
 
@@ -316,11 +415,11 @@ function Dashboard() {
   ];
 
   return (
-    <div className="space-y-6 pb-8">
+    <div className="space-y-4 sm:space-y-6 pb-8">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <PageHeading
           icon={LayoutDashboard}
-          title="Dashboard"
+          title="Página Inicial"
           subtitle="Visão geral de vendas, financeiro e estoque"
           gradientTitle="accent"
         />
@@ -363,73 +462,10 @@ function Dashboard() {
         </Button>
       </div>
 
-      <div className="hidden sm:grid gap-4 sm:grid-cols-2 lg:grid-cols-4 animate-on-scroll">
-        {cards.map((s) => {
-          const Icon = s.icon;
-          const glowClass = s.color.includes("text-success")
-            ? "glow-card-success"
-            : s.color.includes("text-brand-orange")
-              ? "glow-card-orange"
-              : s.color.includes("text-brand-red")
-                ? "glow-card-red"
-                : "glow-card-muted";
-
-          const content = (
-            <Card
-              key={s.label}
-              className={cn(
-                "p-5 bg-glass border border-white/5 shadow-lg relative overflow-hidden group transition-all duration-300",
-                glowClass,
-                s.href && "cursor-pointer",
-              )}
-            >
-              <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-white/5 to-transparent rounded-bl-full pointer-events-none transition-opacity opacity-50 group-hover:opacity-100" />
-              <div className="flex items-start justify-between relative z-10">
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">
-                    {s.label}
-                  </div>
-                  <div className={`mt-2.5 text-2xl font-black tracking-tight ${s.color}`}>
-                    {s.value}
-                  </div>
-                  {s.sub && (
-                    <div className="text-[11px] text-muted-foreground/80 mt-1.5 font-medium bg-white/5 px-2 py-0.5 rounded-full inline-block">
-                      {s.sub}
-                    </div>
-                  )}
-                </div>
-                <div
-                  className={cn(
-                    "size-10 rounded-xl flex items-center justify-center transition-all duration-300 group-hover:scale-110",
-                    s.bg,
-                  )}
-                >
-                  <Icon className={`size-5 ${s.color}`} />
-                </div>
-              </div>
-            </Card>
-          );
-
-          if (s.href) {
-            return (
-              <Link
-                key={s.label}
-                to={s.href as any}
-                search={s.isLowStock ? ({ filter: "baixo" } as any) : undefined}
-              >
-                {content}
-              </Link>
-            );
-          }
-
-          return content;
-        })}
-      </div>
-
-      <div className="sm:hidden">
-        <Carousel className="w-full">
-          <CarouselContent className="-ml-2">
-            {cards.map((s) => {
+      <div className="hidden lg:grid gap-4 lg:grid-cols-4 animate-on-scroll">
+        {isLoadingCards
+          ? Array.from({ length: 10 }).map((_, i) => <CardSkeleton key={i} />)
+          : cards.map((s) => {
               const Icon = s.icon;
               const glowClass = s.color.includes("text-success")
                 ? "glow-card-success"
@@ -441,54 +477,131 @@ function Dashboard() {
 
               const content = (
                 <Card
+                  key={s.label}
                   className={cn(
-                    "p-4 h-full bg-glass border border-white/5 relative overflow-hidden",
+                    "p-5 bg-glass border border-white/5 shadow-lg relative overflow-hidden group transition-all duration-300",
                     glowClass,
                     s.href && "cursor-pointer",
                   )}
                 >
-                  <div className="flex items-start justify-between">
+                  <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-white/5 to-transparent rounded-bl-full pointer-events-none transition-opacity opacity-50 group-hover:opacity-100" />
+                  <div className="flex items-start justify-between relative z-10">
                     <div>
-                      <div className="text-[9px] uppercase tracking-wider text-muted-foreground font-bold">
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-bold">
                         {s.label}
                       </div>
-                      <div className={`mt-1.5 text-lg font-black tracking-tight ${s.color}`}>
+                      <div className={`mt-2.5 text-2xl font-black tracking-tight ${s.color}`}>
                         {s.value}
                       </div>
                       {s.sub && (
-                        <div className="text-[9px] text-muted-foreground/80 mt-1 bg-white/5 px-1.5 py-0.2 rounded-full inline-block">
+                        <div className="text-[11px] text-muted-foreground/80 mt-1.5 font-medium bg-white/5 px-2 py-0.5 rounded-full inline-block">
                           {s.sub}
                         </div>
                       )}
                     </div>
-                    <div className={cn("size-9 rounded-lg flex items-center justify-center", s.bg)}>
-                      <Icon className={`size-4 ${s.color}`} />
+                    <div
+                      className={cn(
+                        "size-10 rounded-xl flex items-center justify-center transition-all duration-300 group-hover:scale-110",
+                        s.bg,
+                      )}
+                    >
+                      <Icon className={`size-5 ${s.color}`} />
                     </div>
                   </div>
                 </Card>
               );
 
-              return (
-                <CarouselItem key={s.label} className="pl-2 basis-[80%]">
-                  {s.href ? (
-                    <Link
-                      to={s.href as any}
-                      search={s.isLowStock ? ({ filter: "baixo" } as any) : undefined}
-                    >
-                      {content}
-                    </Link>
-                  ) : (
-                    content
-                  )}
-                </CarouselItem>
-              );
+              if (s.href) {
+                return (
+                  <Link
+                    key={s.label}
+                    to={s.href as any}
+                    search={s.isLowStock ? ({ filter: "baixo" } as any) : undefined}
+                  >
+                    {content}
+                  </Link>
+                );
+              }
+
+              return content;
             })}
+      </div>
+
+      <div className="lg:hidden">
+        <Carousel className="w-full">
+          <CarouselContent className="-ml-2">
+            {isLoadingCards
+              ? Array.from({ length: 10 }).map((_, i) => (
+                  <CarouselItem key={i} className="pl-2 basis-[80%] sm:basis-1/2 md:basis-1/3">
+                    <CardSkeletonMobile />
+                  </CarouselItem>
+                ))
+              : cards.map((s) => {
+                  const Icon = s.icon;
+                  const glowClass = s.color.includes("text-success")
+                    ? "glow-card-success"
+                    : s.color.includes("text-brand-orange")
+                      ? "glow-card-orange"
+                      : s.color.includes("text-brand-red")
+                        ? "glow-card-red"
+                        : "glow-card-muted";
+
+                  const content = (
+                    <Card
+                      className={cn(
+                        "p-4 h-full bg-glass border border-white/5 relative overflow-hidden",
+                        glowClass,
+                        s.href && "cursor-pointer",
+                      )}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <div className="text-[9px] uppercase tracking-wider text-muted-foreground font-bold">
+                            {s.label}
+                          </div>
+                          <div className={`mt-1.5 text-lg font-black tracking-tight ${s.color}`}>
+                            {s.value}
+                          </div>
+                          {s.sub && (
+                            <div className="text-[9px] text-muted-foreground/80 mt-1 bg-white/5 px-1.5 py-0.2 rounded-full inline-block">
+                              {s.sub}
+                            </div>
+                          )}
+                        </div>
+                        <div className={cn("size-9 rounded-lg flex items-center justify-center", s.bg)}>
+                          <Icon className={`size-4 ${s.color}`} />
+                        </div>
+                      </div>
+                    </Card>
+                  );
+
+                  return (
+                    <CarouselItem key={s.label} className="pl-2 basis-[80%] sm:basis-1/2 md:basis-1/3">
+                      {s.href ? (
+                        <Link
+                          to={s.href as any}
+                          search={s.isLowStock ? ({ filter: "baixo" } as any) : undefined}
+                        >
+                          {content}
+                        </Link>
+                      ) : (
+                        content
+                      )}
+                    </CarouselItem>
+                  );
+                })}
           </CarouselContent>
         </Carousel>
       </div>
 
+      {/* Tarefas sempre no topo, em qualquer modo */}
+      <div className="animate-on-scroll">
+        <TasksWidget isLoading={upcomingTasksQ.isLoading} tasks={upcomingTasksQ.data} />
+      </div>
+
+
       <div className="grid gap-4 lg:grid-cols-3 animate-on-scroll delay-2">
-        <Card className="p-5 lg:col-span-2 bg-glass border border-white/5 shadow-xl">
+        <Card className="p-4 sm:p-5 lg:col-span-2 bg-glass border border-white/5 shadow-xl">
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-semibold flex items-center gap-2">
               <ShoppingCart className="size-4 text-brand-red" /> Vendas concluídas hoje
@@ -498,84 +611,130 @@ function Dashboard() {
             </Link>
           </div>
 
-          {sales.length === 0 ? (
+          {todaySalesQ.isLoading ? (
+            <div className="space-y-3 py-2">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="flex items-center justify-between gap-3">
+                  <div className="space-y-2 flex-1">
+                    <Skeleton className="h-3 w-24" />
+                    <Skeleton className="h-3 w-40" />
+                  </div>
+                  <Skeleton className="h-4 w-20" />
+                </div>
+              ))}
+            </div>
+          ) : sales.length === 0 ? (
             <p className="text-sm text-muted-foreground py-10 text-center">
-              Nenhuma venda registrada recentemente.
+              Nenhuma venda registrada hoje.
             </p>
           ) : (
-            <>
-              <div className="hidden md:block overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-white/5 text-muted-foreground text-[10px] uppercase tracking-wider">
-                      <th className="text-left pb-2.5 font-bold">Data</th>
-                      <th className="text-left pb-2.5 font-bold">Cliente</th>
-                      <th className="text-left pb-2.5 font-bold">Vendedor</th>
-                      <th className="text-right pb-2.5 font-bold">Total</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/5">
-                    {sales.slice(0, 5).map((s) => (
-                      <tr
+            (() => {
+              const totalPages = Math.max(1, Math.ceil(sales.length / TODAY_PAGE_SIZE));
+              const page = Math.min(todayPage, totalPages);
+              const startIdx = (page - 1) * TODAY_PAGE_SIZE;
+              const pageItems = sales.slice(startIdx, startIdx + TODAY_PAGE_SIZE);
+              return (
+                <>
+                  <div className="hidden md:block overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-white/5 text-muted-foreground text-[10px] uppercase tracking-wider">
+                          <th className="text-left pb-2.5 font-bold">Data</th>
+                          <th className="text-left pb-2.5 font-bold">Cliente</th>
+                          <th className="text-left pb-2.5 font-bold">Vendedor</th>
+                          <th className="text-right pb-2.5 font-bold">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5">
+                        {pageItems.map((s) => (
+                          <tr
+                            key={s.id}
+                            className="group hover:bg-white/[0.02] transition-colors duration-200"
+                          >
+                            <td className="py-3.5 text-muted-foreground transition-colors group-hover:text-foreground">
+                              {new Date(s.created_at).toLocaleDateString("pt-BR", {
+                                day: "2-digit",
+                                month: "2-digit",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}
+                            </td>
+                            <td className="py-3.5 font-semibold text-foreground">
+                              {s.customer_id ? "Cliente" : "Consumidor final"}
+                            </td>
+                            <td className="py-3.5 text-muted-foreground transition-colors group-hover:text-foreground">
+                              {s.profiles?.name || "—"}
+                            </td>
+                            <td className="py-3.5 text-right font-black text-success">
+                              {brl(Number(s.total))}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="md:hidden space-y-3">
+                    {pageItems.map((s) => (
+                      <div
                         key={s.id}
-                        className="group hover:bg-white/[0.02] transition-colors duration-200"
+                        className="flex justify-between items-center border-b border-white/5 pb-2.5 last:border-0 last:pb-0"
                       >
-                        <td className="py-3.5 text-muted-foreground transition-colors group-hover:text-foreground">
-                          {new Date(s.created_at).toLocaleDateString("pt-BR", {
-                            day: "2-digit",
-                            month: "2-digit",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </td>
-                        <td className="py-3.5 font-semibold text-foreground">
-                          {s.customer_id ? "Cliente" : "Consumidor final"}
-                        </td>
-                        <td className="py-3.5 text-muted-foreground transition-colors group-hover:text-foreground">
-                          {s.profiles?.name || "—"}
-                        </td>
-                        <td className="py-3.5 text-right font-black text-success">
-                          {brl(Number(s.total))}
-                        </td>
-                      </tr>
+                        <div>
+                          <div className="text-xs font-semibold text-foreground">
+                            {s.customer_id ? "Cliente" : "Consumidor final"}
+                          </div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {new Date(s.created_at).toLocaleDateString("pt-BR", {
+                              day: "2-digit",
+                              month: "2-digit",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-sm font-black text-success">
+                            {brl(Number(s.total))}
+                          </div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {s.profiles?.name || "—"}
+                          </div>
+                        </div>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="md:hidden space-y-3">
-                {sales.slice(0, 5).map((s) => (
-                  <div
-                    key={s.id}
-                    className="flex justify-between items-center border-b border-white/5 pb-2.5 last:border-0 last:pb-0"
-                  >
-                    <div>
-                      <div className="text-xs font-semibold text-foreground">
-                        {s.customer_id ? "Cliente" : "Consumidor final"}
-                      </div>
-                      <div className="text-[10px] text-muted-foreground">
-                        {new Date(s.created_at).toLocaleDateString("pt-BR", {
-                          day: "2-digit",
-                          month: "2-digit",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-sm font-black text-success">{brl(Number(s.total))}</div>
-                      <div className="text-[10px] text-muted-foreground">
-                        {s.profiles?.name || "—"}
-                      </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 pt-4 mt-3 border-t border-white/5 text-xs">
+                    <span className="text-muted-foreground">
+                      {sales.length} {sales.length === 1 ? "venda" : "vendas"} hoje · página {page} de {totalPages}
+                    </span>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={page <= 1}
+                        onClick={() => setTodayPage((p) => Math.max(1, p - 1))}
+                      >
+                        Anterior
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={page >= totalPages}
+                        onClick={() => setTodayPage((p) => Math.min(totalPages, p + 1))}
+                      >
+                        Próxima
+                      </Button>
                     </div>
                   </div>
-                ))}
-              </div>
-            </>
+                </>
+              );
+            })()
           )}
         </Card>
 
+
         <div className="space-y-4">
-          <Card className="p-5 bg-glass border border-white/5 shadow-xl">
+          <Card className="p-4 sm:p-5 bg-glass border border-white/5 shadow-xl">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-semibold flex items-center gap-2">
                 <Trophy className="size-4 text-brand-orange" /> Top produtos
@@ -584,7 +743,19 @@ function Dashboard() {
                 Relatórios
               </Link>
             </div>
-            {topProducts.length === 0 ? (
+            {monthSaleItemsQ.isLoading || productsQ.isLoading ? (
+              <ul className="space-y-3">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <li key={i} className="flex items-center justify-between gap-3 p-2 rounded-lg bg-white/5 border border-white/5">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <Skeleton className="size-5 rounded-full" />
+                      <Skeleton className="h-3 flex-1" />
+                    </div>
+                    <Skeleton className="h-4 w-12 rounded-full" />
+                  </li>
+                ))}
+              </ul>
+            ) : topProducts.length === 0 ? (
               <p className="text-sm text-muted-foreground py-6 text-center">
                 Sem vendas suficientes.
               </p>
@@ -612,7 +783,7 @@ function Dashboard() {
             )}
           </Card>
 
-          <Card className="p-5 bg-glass border border-white/5 shadow-xl">
+          <Card className="p-4 sm:p-5 bg-glass border border-white/5 shadow-xl">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-semibold flex items-center gap-2">
                 <AlertTriangle className="size-4 text-brand-red" /> Estoque baixo
@@ -625,7 +796,22 @@ function Dashboard() {
                 Ver estoque
               </Link>
             </div>
-            {low.length === 0 ? (
+            {productsQ.isLoading ? (
+              <ul className="space-y-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <li key={i} className="space-y-2 p-2 rounded-lg bg-white/5 border border-white/5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="space-y-1.5 flex-1">
+                        <Skeleton className="h-3 w-32" />
+                        <Skeleton className="h-2.5 w-16" />
+                      </div>
+                      <Skeleton className="h-3 w-12" />
+                    </div>
+                    <Skeleton className="h-1.5 w-full rounded-full" />
+                  </li>
+                ))}
+              </ul>
+            ) : low.length === 0 ? (
               <p className="text-sm text-muted-foreground py-6 text-center">Tudo em ordem 🎉</p>
             ) : (
               <ul className="space-y-3">
@@ -665,7 +851,128 @@ function Dashboard() {
             )}
           </Card>
         </div>
+
       </div>
     </div>
+  );
+}
+
+function TasksWidget({ 
+  isLoading, 
+  tasks 
+}: { 
+  isLoading: boolean; 
+  tasks: any[] | undefined 
+}) {
+  const [filter, setFilter] = useState<"today" | "overdue" | "all">("today");
+
+  const filteredTasks = useMemo(() => {
+    if (!tasks) return [];
+    const now = new Date();
+    const todayStr = now.toISOString().split('T')[0];
+
+    return tasks.filter(task => {
+      const taskDate = new Date(task.due_at);
+      const taskDateStr = task.due_at.split('T')[0];
+
+      if (filter === "today") return taskDateStr === todayStr;
+      if (filter === "overdue") return taskDate < now && task.status === "pending";
+      return true;
+    });
+  }, [tasks, filter]);
+
+  return (
+    <Card className="p-4 sm:p-5 bg-glass border border-white/5 shadow-xl">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+        <h3 className="font-semibold flex items-center gap-2 text-sm sm:text-base">
+          <Calendar className="size-4 text-brand-orange" /> Próximas Tarefas
+        </h3>
+        <div className="flex items-center gap-1 bg-white/5 p-1 rounded-lg">
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            className={cn("h-7 px-2.5 text-[10px] uppercase font-bold tracking-wider", filter === "today" ? "bg-brand-orange text-white hover:bg-brand-orange hover:text-white" : "text-muted-foreground")}
+            onClick={() => setFilter("today")}
+          >
+            Hoje
+          </Button>
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            className={cn("h-7 px-2.5 text-[10px] uppercase font-bold tracking-wider", filter === "overdue" ? "bg-brand-red text-white hover:bg-brand-red hover:text-white" : "text-muted-foreground")}
+            onClick={() => setFilter("overdue")}
+          >
+            Atrasadas
+          </Button>
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            className={cn("h-7 px-2.5 text-[10px] uppercase font-bold tracking-wider", filter === "all" ? "bg-muted text-foreground hover:bg-muted" : "text-muted-foreground")}
+            onClick={() => setFilter("all")}
+          >
+            Todas
+          </Button>
+        </div>
+      </div>
+      {isLoading ? (
+        <ul className="space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <li key={i} className="flex items-center gap-3 p-2 rounded-lg bg-white/5">
+              <Skeleton className="size-4 rounded-full" />
+              <Skeleton className="h-3 flex-1" />
+            </li>
+          ))}
+        </ul>
+      ) : filteredTasks.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-6 text-center">
+          <CheckCircle2 className="size-8 text-success/20 mb-2" />
+          <p className="text-xs text-muted-foreground font-medium">Nenhuma tarefa pendente</p>
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {filteredTasks.slice(0, 5).map((task) => {
+            const isOverdue = new Date(task.due_at) < new Date();
+            return (
+              <li
+                key={task.id}
+                title={task.title + (task.description ? ` - ${task.description}` : "")}
+                className={cn(
+                  "group flex items-start gap-3 p-2 rounded-lg transition-all duration-200 hover:bg-white/5 border border-transparent hover:border-white/5",
+                  isOverdue && "bg-brand-red/5 border-brand-red/10"
+                )}
+              >
+                <div className={cn(
+                  "mt-0.5 size-4 rounded-full border-2 flex items-center justify-center shrink-0",
+                  isOverdue ? "border-brand-red text-brand-red" : "border-brand-orange text-brand-orange"
+                )}>
+                  <Clock3 className="size-2.5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className={cn(
+                    "text-sm font-medium truncate",
+                    isOverdue ? "text-brand-red" : "text-foreground"
+                  )}>
+                    {task.title}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5">
+                    {new Date(task.due_at).toLocaleDateString("pt-BR", {
+                      day: "2-digit",
+                      month: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="mt-4 pt-3 border-t border-white/5 flex justify-center">
+        <Link to="/app/agenda" className="text-xs text-brand-orange hover:underline flex items-center gap-1.5">
+          Ver agenda completa <ArrowUpRight className="size-3" />
+        </Link>
+      </div>
+    </Card>
   );
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 
 const SESSION_KEY = "pdv_reservation_session_id";
 
@@ -34,7 +34,7 @@ export function useStockReservation(companyId: string | undefined) {
     queryKey: ["stock-reserved", companyId],
     queryFn: async (): Promise<ReservedRow[]> => {
       if (!companyId) return [];
-      const { data, error } = await (appwrite as any)
+      const { data, error } = await (supabase as any)
         .from("product_reserved_stock")
         .select("product_id, reserved")
         .eq("company_id", companyId);
@@ -53,7 +53,7 @@ export function useStockReservation(companyId: string | undefined) {
     queryKey: ["stock-reserved-mine", companyId, sessionId],
     queryFn: async (): Promise<ReservedRow[]> => {
       if (!companyId) return [];
-      const { data, error } = await (appwrite as any)
+      const { data, error } = await (supabase as any)
         .from("stock_reservations")
         .select("product_id, quantity")
         .eq("company_id", companyId)
@@ -93,7 +93,7 @@ export function useStockReservation(companyId: string | undefined) {
   const reserve = useCallback(
     async (productId: string, quantity: number) => {
       if (!companyId) return;
-      const { error } = await (appwrite as any).rpc("reserve_stock", {
+      const { error } = await (supabase as any).rpc("reserve_stock", {
         _company: companyId,
         _product: productId,
         _session: sessionId,
@@ -112,7 +112,7 @@ export function useStockReservation(companyId: string | undefined) {
 
   const releaseAll = useCallback(async () => {
     if (!companyId) return;
-    const { error } = await (appwrite as any).rpc("release_session_reservations", {
+    const { error } = await (supabase as any).rpc("release_session_reservations", {
       _session: sessionId,
     });
     if (error && error.code !== "PGRST202")
@@ -126,7 +126,7 @@ export function useStockReservation(companyId: string | undefined) {
   useEffect(() => {
     if (!companyId) return;
     const beat = async () => {
-      const { error } = await (appwrite as any).rpc("touch_reservations", {
+      const { error } = await (supabase as any).rpc("touch_reservations", {
         _session: sessionId,
         _ttl_minutes: 15,
       });
@@ -143,7 +143,13 @@ export function useStockReservation(companyId: string | undefined) {
   useEffect(() => {
     const onUnload = () => {
       try {
-        appwrite.rpc("release_session_reservations", { _session: sessionId });
+        const url = `${(supabase as any).supabaseUrl}/rest/v1/rpc/release_session_reservations`;
+        const token = (supabase as any).supabaseKey;
+        const blob = new Blob([JSON.stringify({ _session: sessionId })], {
+          type: "application/json",
+        });
+        // sendBeacon não permite headers; usamos como best-effort apenas
+        navigator.sendBeacon?.(url + `?apikey=${token}`, blob);
       } catch {}
     };
     window.addEventListener("beforeunload", onUnload);

@@ -17,6 +17,7 @@ interface PrintPreviewDialogProps {
   title: string;
   content: string;
   onConfirm?: () => void;
+  extras?: React.ReactNode;
 }
 
 export function PrintPreviewDialog({
@@ -25,7 +26,9 @@ export function PrintPreviewDialog({
   title,
   content,
   onConfirm,
+  extras,
 }: PrintPreviewDialogProps) {
+
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const handlePrint = () => {
@@ -36,24 +39,27 @@ export function PrintPreviewDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl sm:max-w-[450px]">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Printer className="size-5" />
-            {title}
+      <DialogContent className="w-[95vw] max-w-2xl max-h-[95vh] flex flex-col p-0 gap-0 overflow-hidden">
+        <DialogHeader className="p-4 sm:p-6 pb-3 shrink-0">
+          <DialogTitle className="flex items-center gap-2 pr-8 text-base sm:text-lg">
+            <Printer className="size-5 shrink-0" />
+            <span className="min-w-0 truncate">{title}</span>
           </DialogTitle>
         </DialogHeader>
 
-        <div className="relative bg-muted/30 rounded-md border p-4 flex justify-center overflow-hidden h-[500px]">
-          <iframe
-            ref={iframeRef}
-            title="Print Preview"
-            className="w-full h-full border-none bg-white shadow-sm"
-            srcDoc={content}
-          />
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6">
+          <div className="relative bg-muted/30 rounded-md border p-2 sm:p-4 flex justify-center overflow-hidden h-[55vh] min-h-[280px] sm:h-[440px]">
+            <iframe
+              ref={iframeRef}
+              title="Print Preview"
+              className="w-full h-full border-none bg-white shadow-sm"
+              srcDoc={content}
+            />
+          </div>
+          {extras ? <div className="py-3">{extras}</div> : null}
         </div>
 
-        <DialogFooter className="flex flex-col sm:flex-row gap-2">
+        <DialogFooter className="p-4 sm:p-6 pt-3 border-t shrink-0 grid grid-cols-1 sm:flex sm:flex-row sm:justify-end gap-2">
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}

@@ -59,20 +59,30 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       { name: "twitter:description", content: "ERP multiempresa para auto peças" },
       {
         property: "og:image",
-        content: "/pwa-icon-512.png",
+        content:
+          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/68ff9c55-3229-4f97-8583-be42b8ba2278/id-preview-656f0818--54df0fe6-5eb6-44d7-8103-7686e7f4ca70.lovable.app-1776826994237.png",
       },
       {
         name: "twitter:image",
-        content: "/pwa-icon-512.png",
+        content:
+          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/68ff9c55-3229-4f97-8583-be42b8ba2278/id-preview-656f0818--54df0fe6-5eb6-44d7-8103-7686e7f4ca70.lovable.app-1776826994237.png",
       },
       { name: "twitter:card", content: "summary_large_image" },
       { property: "og:type", content: "website" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
+      { rel: "icon", type: "image/x-icon", href: "/favicon.ico", sizes: "any" },
+      { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
+      { rel: "icon", type: "image/png", sizes: "32x32", href: "/favicon-32.png" },
+      { rel: "icon", type: "image/png", sizes: "16x16", href: "/favicon-16.png" },
+      { rel: "apple-touch-icon", sizes: "180x180", href: "/apple-touch-icon.png" },
+      { rel: "preconnect", href: "https://fonts.googleapis.com" },
+      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+      { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300..800;1,300..800&display=swap" },
       { rel: "manifest", href: "/manifest.webmanifest" },
-      { rel: "apple-touch-icon", href: "/apple-touch-icon.png" },
     ],
+
   }),
   shellComponent: RootShell,
   component: RootComponent,
@@ -97,18 +107,14 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   useEffect(() => {
-    if (typeof window !== "undefined" && "serviceWorker" in navigator) {
-      const swUrl = import.meta.env.DEV ? "/dev-sw.js?dev-sw" : "/sw.js";
-      navigator.serviceWorker
-        .register(swUrl, { type: "module" })
-        .then((reg) => {
-          console.log("Service Worker registrado com sucesso:", reg);
-        })
-        .catch((err) => {
-          console.error("Erro ao registrar Service Worker:", err);
-        });
+    // QZ Tray: auto-conectar e re-conectar quando o serviço local voltar
+    if (typeof window !== "undefined") {
+      import("@/lib/qz-print")
+        .then((m) => m.qzBootstrapAutoReconnect())
+        .catch(() => {});
     }
   }, []);
+
 
   return (
     <QueryClientProvider client={queryClient}>

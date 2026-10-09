@@ -11,11 +11,15 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppRouteImport } from './routes/app'
+import { Route as BloqueadoRouteImport } from './routes/bloqueado'
+import { Route as ConfiancaRouteImport } from './routes/confianca'
 import { Route as EmpresasRouteImport } from './routes/empresas'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SuperAdminRouteImport } from './routes/super-admin'
 import { Route as AppIndexRouteImport } from './routes/app.index'
+import { Route as AppAgendaRouteImport } from './routes/app.agenda'
+import { Route as AppAuditoriaFiscalRouteImport } from './routes/app.auditoria-fiscal'
 import { Route as AppCategoriasRouteImport } from './routes/app.categorias'
 import { Route as AppConciliacaoRouteImport } from './routes/app.conciliacao'
 import { Route as AppConfiguracoesRouteImport } from './routes/app.configuracoes'
@@ -30,6 +34,7 @@ import { Route as AppLocalizacoesRouteImport } from './routes/app.localizacoes'
 import { Route as AppMarcasRouteImport } from './routes/app.marcas'
 import { Route as AppMeuPerfilRouteImport } from './routes/app.meu-perfil'
 import { Route as AppNotasFiscaisRouteImport } from './routes/app.notas-fiscais'
+import { Route as AppOrcamentosRouteImport } from './routes/app.orcamentos'
 import { Route as AppParceirosRouteImport } from './routes/app.parceiros'
 import { Route as AppProdutosRouteImport } from './routes/app.produtos'
 import { Route as AppRelatoriosRouteImport } from './routes/app.relatorios'
@@ -37,6 +42,7 @@ import { Route as AppUnidadesRouteImport } from './routes/app.unidades'
 import { Route as AppVendasRouteImport } from './routes/app.vendas'
 import { Route as ApiFunctionsProductAiLookupRouteImport } from './routes/api/functions/product-ai-lookup'
 import { Route as ApiFunctionsSendPushRouteImport } from './routes/api/functions/send-push'
+import { Route as ApiFunctionsSyncSupabaseRouteImport } from './routes/api/functions/sync-supabase'
 import { Route as ApiFunctionsTestAiConnectionRouteImport } from './routes/api/functions/test-ai-connection'
 import { Route as ApiN8nClientsQueryRouteImport } from './routes/api/n8n/clients-query'
 import { Route as ApiN8nLogsQueryRouteImport } from './routes/api/n8n/logs-query'
@@ -44,10 +50,16 @@ import { Route as ApiN8nOrdersQueryRouteImport } from './routes/api/n8n/orders-q
 import { Route as ApiN8nPartnersCreateRouteImport } from './routes/api/n8n/partners-create'
 import { Route as ApiN8nProductsQueryRouteImport } from './routes/api/n8n/products-query'
 import { Route as ApiN8nSalesHandlerRouteImport } from './routes/api/n8n/sales-handler'
+import { Route as ApiPublicFocusNfeRouteImport } from './routes/api/public/focus-nfe'
 import { Route as ApiPublicNetworkCompaniesRouteImport } from './routes/api/public/network-companies'
 import { Route as ApiPublicRegisterNetworkAccessRouteImport } from './routes/api/public/register-network-access'
 import { Route as ApiPublicStockSearchRouteImport } from './routes/api/public/stock-search'
+import { Route as ApiPublicGmailCallbackRouteImport } from './routes/api/public/gmail.callback'
+import { Route as ApiPublicGoogleDriveCallbackRouteImport } from './routes/api/public/google-drive.callback'
+import { Route as ApiPublicHooksAutoLogoutTickRouteImport } from './routes/api/public/hooks/auto-logout-tick'
+import { Route as ApiPublicHooksDriveUploadRetryRouteImport } from './routes/api/public/hooks/drive-upload-retry'
 import { Route as ApiPublicHooksPurgeNetworkAccessRouteImport } from './routes/api/public/hooks/purge-network-access'
+import { Route as ApiPublicReportsSalesRouteImport } from './routes/api/public/reports/sales'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -57,6 +69,16 @@ const IndexRoute = IndexRouteImport.update({
 const AppRoute = AppRouteImport.update({
   id: '/app',
   path: '/app',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BloqueadoRoute = BloqueadoRouteImport.update({
+  id: '/bloqueado',
+  path: '/bloqueado',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConfiancaRoute = ConfiancaRouteImport.update({
+  id: '/confianca',
+  path: '/confianca',
   getParentRoute: () => rootRouteImport,
 } as any)
 const EmpresasRoute = EmpresasRouteImport.update({
@@ -82,6 +104,16 @@ const SuperAdminRoute = SuperAdminRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAgendaRoute = AppAgendaRouteImport.update({
+  id: '/agenda',
+  path: '/agenda',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAuditoriaFiscalRoute = AppAuditoriaFiscalRouteImport.update({
+  id: '/auditoria-fiscal',
+  path: '/auditoria-fiscal',
   getParentRoute: () => AppRoute,
 } as any)
 const AppCategoriasRoute = AppCategoriasRouteImport.update({
@@ -154,6 +186,11 @@ const AppNotasFiscaisRoute = AppNotasFiscaisRouteImport.update({
   path: '/notas-fiscais',
   getParentRoute: () => AppRoute,
 } as any)
+const AppOrcamentosRoute = AppOrcamentosRouteImport.update({
+  id: '/orcamentos',
+  path: '/orcamentos',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppParceirosRoute = AppParceirosRouteImport.update({
   id: '/parceiros',
   path: '/parceiros',
@@ -190,6 +227,12 @@ const ApiFunctionsSendPushRoute = ApiFunctionsSendPushRouteImport.update({
   path: '/api/functions/send-push',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiFunctionsSyncSupabaseRoute =
+  ApiFunctionsSyncSupabaseRouteImport.update({
+    id: '/api/functions/sync-supabase',
+    path: '/api/functions/sync-supabase',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiFunctionsTestAiConnectionRoute =
   ApiFunctionsTestAiConnectionRouteImport.update({
     id: '/api/functions/test-ai-connection',
@@ -226,6 +269,11 @@ const ApiN8nSalesHandlerRoute = ApiN8nSalesHandlerRouteImport.update({
   path: '/api/n8n/sales-handler',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicFocusNfeRoute = ApiPublicFocusNfeRouteImport.update({
+  id: '/api/public/focus-nfe',
+  path: '/api/public/focus-nfe',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPublicNetworkCompaniesRoute =
   ApiPublicNetworkCompaniesRouteImport.update({
     id: '/api/public/network-companies',
@@ -243,20 +291,52 @@ const ApiPublicStockSearchRoute = ApiPublicStockSearchRouteImport.update({
   path: '/api/public/stock-search',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicGmailCallbackRoute = ApiPublicGmailCallbackRouteImport.update({
+  id: '/api/public/gmail/callback',
+  path: '/api/public/gmail/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicGoogleDriveCallbackRoute =
+  ApiPublicGoogleDriveCallbackRouteImport.update({
+    id: '/api/public/google-drive/callback',
+    path: '/api/public/google-drive/callback',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiPublicHooksAutoLogoutTickRoute =
+  ApiPublicHooksAutoLogoutTickRouteImport.update({
+    id: '/api/public/hooks/auto-logout-tick',
+    path: '/api/public/hooks/auto-logout-tick',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiPublicHooksDriveUploadRetryRoute =
+  ApiPublicHooksDriveUploadRetryRouteImport.update({
+    id: '/api/public/hooks/drive-upload-retry',
+    path: '/api/public/hooks/drive-upload-retry',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicHooksPurgeNetworkAccessRoute =
   ApiPublicHooksPurgeNetworkAccessRouteImport.update({
     id: '/api/public/hooks/purge-network-access',
     path: '/api/public/hooks/purge-network-access',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicReportsSalesRoute = ApiPublicReportsSalesRouteImport.update({
+  id: '/api/public/reports/sales',
+  path: '/api/public/reports/sales',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/app': typeof AppRouteWithChildren
+  '/bloqueado': typeof BloqueadoRoute
+  '/confianca': typeof ConfiancaRoute
   '/empresas': typeof EmpresasRoute
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/super-admin': typeof SuperAdminRoute
+  '/app/agenda': typeof AppAgendaRoute
+  '/app/auditoria-fiscal': typeof AppAuditoriaFiscalRoute
   '/app/categorias': typeof AppCategoriasRoute
   '/app/conciliacao': typeof AppConciliacaoRoute
   '/app/configuracoes': typeof AppConfiguracoesRoute
@@ -271,6 +351,7 @@ export interface FileRoutesByFullPath {
   '/app/marcas': typeof AppMarcasRoute
   '/app/meu-perfil': typeof AppMeuPerfilRoute
   '/app/notas-fiscais': typeof AppNotasFiscaisRoute
+  '/app/orcamentos': typeof AppOrcamentosRoute
   '/app/parceiros': typeof AppParceirosRoute
   '/app/produtos': typeof AppProdutosRoute
   '/app/relatorios': typeof AppRelatoriosRoute
@@ -279,6 +360,7 @@ export interface FileRoutesByFullPath {
   '/app/': typeof AppIndexRoute
   '/api/functions/product-ai-lookup': typeof ApiFunctionsProductAiLookupRoute
   '/api/functions/send-push': typeof ApiFunctionsSendPushRoute
+  '/api/functions/sync-supabase': typeof ApiFunctionsSyncSupabaseRoute
   '/api/functions/test-ai-connection': typeof ApiFunctionsTestAiConnectionRoute
   '/api/n8n/clients-query': typeof ApiN8nClientsQueryRoute
   '/api/n8n/logs-query': typeof ApiN8nLogsQueryRoute
@@ -286,17 +368,27 @@ export interface FileRoutesByFullPath {
   '/api/n8n/partners-create': typeof ApiN8nPartnersCreateRoute
   '/api/n8n/products-query': typeof ApiN8nProductsQueryRoute
   '/api/n8n/sales-handler': typeof ApiN8nSalesHandlerRoute
+  '/api/public/focus-nfe': typeof ApiPublicFocusNfeRoute
   '/api/public/network-companies': typeof ApiPublicNetworkCompaniesRoute
   '/api/public/register-network-access': typeof ApiPublicRegisterNetworkAccessRoute
   '/api/public/stock-search': typeof ApiPublicStockSearchRoute
+  '/api/public/gmail/callback': typeof ApiPublicGmailCallbackRoute
+  '/api/public/google-drive/callback': typeof ApiPublicGoogleDriveCallbackRoute
+  '/api/public/hooks/auto-logout-tick': typeof ApiPublicHooksAutoLogoutTickRoute
+  '/api/public/hooks/drive-upload-retry': typeof ApiPublicHooksDriveUploadRetryRoute
   '/api/public/hooks/purge-network-access': typeof ApiPublicHooksPurgeNetworkAccessRoute
+  '/api/public/reports/sales': typeof ApiPublicReportsSalesRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/bloqueado': typeof BloqueadoRoute
+  '/confianca': typeof ConfiancaRoute
   '/empresas': typeof EmpresasRoute
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/super-admin': typeof SuperAdminRoute
+  '/app/agenda': typeof AppAgendaRoute
+  '/app/auditoria-fiscal': typeof AppAuditoriaFiscalRoute
   '/app/categorias': typeof AppCategoriasRoute
   '/app/conciliacao': typeof AppConciliacaoRoute
   '/app/configuracoes': typeof AppConfiguracoesRoute
@@ -311,6 +403,7 @@ export interface FileRoutesByTo {
   '/app/marcas': typeof AppMarcasRoute
   '/app/meu-perfil': typeof AppMeuPerfilRoute
   '/app/notas-fiscais': typeof AppNotasFiscaisRoute
+  '/app/orcamentos': typeof AppOrcamentosRoute
   '/app/parceiros': typeof AppParceirosRoute
   '/app/produtos': typeof AppProdutosRoute
   '/app/relatorios': typeof AppRelatoriosRoute
@@ -319,6 +412,7 @@ export interface FileRoutesByTo {
   '/app': typeof AppIndexRoute
   '/api/functions/product-ai-lookup': typeof ApiFunctionsProductAiLookupRoute
   '/api/functions/send-push': typeof ApiFunctionsSendPushRoute
+  '/api/functions/sync-supabase': typeof ApiFunctionsSyncSupabaseRoute
   '/api/functions/test-ai-connection': typeof ApiFunctionsTestAiConnectionRoute
   '/api/n8n/clients-query': typeof ApiN8nClientsQueryRoute
   '/api/n8n/logs-query': typeof ApiN8nLogsQueryRoute
@@ -326,19 +420,29 @@ export interface FileRoutesByTo {
   '/api/n8n/partners-create': typeof ApiN8nPartnersCreateRoute
   '/api/n8n/products-query': typeof ApiN8nProductsQueryRoute
   '/api/n8n/sales-handler': typeof ApiN8nSalesHandlerRoute
+  '/api/public/focus-nfe': typeof ApiPublicFocusNfeRoute
   '/api/public/network-companies': typeof ApiPublicNetworkCompaniesRoute
   '/api/public/register-network-access': typeof ApiPublicRegisterNetworkAccessRoute
   '/api/public/stock-search': typeof ApiPublicStockSearchRoute
+  '/api/public/gmail/callback': typeof ApiPublicGmailCallbackRoute
+  '/api/public/google-drive/callback': typeof ApiPublicGoogleDriveCallbackRoute
+  '/api/public/hooks/auto-logout-tick': typeof ApiPublicHooksAutoLogoutTickRoute
+  '/api/public/hooks/drive-upload-retry': typeof ApiPublicHooksDriveUploadRetryRoute
   '/api/public/hooks/purge-network-access': typeof ApiPublicHooksPurgeNetworkAccessRoute
+  '/api/public/reports/sales': typeof ApiPublicReportsSalesRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/app': typeof AppRouteWithChildren
+  '/bloqueado': typeof BloqueadoRoute
+  '/confianca': typeof ConfiancaRoute
   '/empresas': typeof EmpresasRoute
   '/login': typeof LoginRoute
   '/signup': typeof SignupRoute
   '/super-admin': typeof SuperAdminRoute
+  '/app/agenda': typeof AppAgendaRoute
+  '/app/auditoria-fiscal': typeof AppAuditoriaFiscalRoute
   '/app/categorias': typeof AppCategoriasRoute
   '/app/conciliacao': typeof AppConciliacaoRoute
   '/app/configuracoes': typeof AppConfiguracoesRoute
@@ -353,6 +457,7 @@ export interface FileRoutesById {
   '/app/marcas': typeof AppMarcasRoute
   '/app/meu-perfil': typeof AppMeuPerfilRoute
   '/app/notas-fiscais': typeof AppNotasFiscaisRoute
+  '/app/orcamentos': typeof AppOrcamentosRoute
   '/app/parceiros': typeof AppParceirosRoute
   '/app/produtos': typeof AppProdutosRoute
   '/app/relatorios': typeof AppRelatoriosRoute
@@ -361,6 +466,7 @@ export interface FileRoutesById {
   '/app/': typeof AppIndexRoute
   '/api/functions/product-ai-lookup': typeof ApiFunctionsProductAiLookupRoute
   '/api/functions/send-push': typeof ApiFunctionsSendPushRoute
+  '/api/functions/sync-supabase': typeof ApiFunctionsSyncSupabaseRoute
   '/api/functions/test-ai-connection': typeof ApiFunctionsTestAiConnectionRoute
   '/api/n8n/clients-query': typeof ApiN8nClientsQueryRoute
   '/api/n8n/logs-query': typeof ApiN8nLogsQueryRoute
@@ -368,20 +474,30 @@ export interface FileRoutesById {
   '/api/n8n/partners-create': typeof ApiN8nPartnersCreateRoute
   '/api/n8n/products-query': typeof ApiN8nProductsQueryRoute
   '/api/n8n/sales-handler': typeof ApiN8nSalesHandlerRoute
+  '/api/public/focus-nfe': typeof ApiPublicFocusNfeRoute
   '/api/public/network-companies': typeof ApiPublicNetworkCompaniesRoute
   '/api/public/register-network-access': typeof ApiPublicRegisterNetworkAccessRoute
   '/api/public/stock-search': typeof ApiPublicStockSearchRoute
+  '/api/public/gmail/callback': typeof ApiPublicGmailCallbackRoute
+  '/api/public/google-drive/callback': typeof ApiPublicGoogleDriveCallbackRoute
+  '/api/public/hooks/auto-logout-tick': typeof ApiPublicHooksAutoLogoutTickRoute
+  '/api/public/hooks/drive-upload-retry': typeof ApiPublicHooksDriveUploadRetryRoute
   '/api/public/hooks/purge-network-access': typeof ApiPublicHooksPurgeNetworkAccessRoute
+  '/api/public/reports/sales': typeof ApiPublicReportsSalesRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
     | '/app'
+    | '/bloqueado'
+    | '/confianca'
     | '/empresas'
     | '/login'
     | '/signup'
     | '/super-admin'
+    | '/app/agenda'
+    | '/app/auditoria-fiscal'
     | '/app/categorias'
     | '/app/conciliacao'
     | '/app/configuracoes'
@@ -396,6 +512,7 @@ export interface FileRouteTypes {
     | '/app/marcas'
     | '/app/meu-perfil'
     | '/app/notas-fiscais'
+    | '/app/orcamentos'
     | '/app/parceiros'
     | '/app/produtos'
     | '/app/relatorios'
@@ -404,6 +521,7 @@ export interface FileRouteTypes {
     | '/app/'
     | '/api/functions/product-ai-lookup'
     | '/api/functions/send-push'
+    | '/api/functions/sync-supabase'
     | '/api/functions/test-ai-connection'
     | '/api/n8n/clients-query'
     | '/api/n8n/logs-query'
@@ -411,17 +529,27 @@ export interface FileRouteTypes {
     | '/api/n8n/partners-create'
     | '/api/n8n/products-query'
     | '/api/n8n/sales-handler'
+    | '/api/public/focus-nfe'
     | '/api/public/network-companies'
     | '/api/public/register-network-access'
     | '/api/public/stock-search'
+    | '/api/public/gmail/callback'
+    | '/api/public/google-drive/callback'
+    | '/api/public/hooks/auto-logout-tick'
+    | '/api/public/hooks/drive-upload-retry'
     | '/api/public/hooks/purge-network-access'
+    | '/api/public/reports/sales'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/bloqueado'
+    | '/confianca'
     | '/empresas'
     | '/login'
     | '/signup'
     | '/super-admin'
+    | '/app/agenda'
+    | '/app/auditoria-fiscal'
     | '/app/categorias'
     | '/app/conciliacao'
     | '/app/configuracoes'
@@ -436,6 +564,7 @@ export interface FileRouteTypes {
     | '/app/marcas'
     | '/app/meu-perfil'
     | '/app/notas-fiscais'
+    | '/app/orcamentos'
     | '/app/parceiros'
     | '/app/produtos'
     | '/app/relatorios'
@@ -444,6 +573,7 @@ export interface FileRouteTypes {
     | '/app'
     | '/api/functions/product-ai-lookup'
     | '/api/functions/send-push'
+    | '/api/functions/sync-supabase'
     | '/api/functions/test-ai-connection'
     | '/api/n8n/clients-query'
     | '/api/n8n/logs-query'
@@ -451,18 +581,28 @@ export interface FileRouteTypes {
     | '/api/n8n/partners-create'
     | '/api/n8n/products-query'
     | '/api/n8n/sales-handler'
+    | '/api/public/focus-nfe'
     | '/api/public/network-companies'
     | '/api/public/register-network-access'
     | '/api/public/stock-search'
+    | '/api/public/gmail/callback'
+    | '/api/public/google-drive/callback'
+    | '/api/public/hooks/auto-logout-tick'
+    | '/api/public/hooks/drive-upload-retry'
     | '/api/public/hooks/purge-network-access'
+    | '/api/public/reports/sales'
   id:
     | '__root__'
     | '/'
     | '/app'
+    | '/bloqueado'
+    | '/confianca'
     | '/empresas'
     | '/login'
     | '/signup'
     | '/super-admin'
+    | '/app/agenda'
+    | '/app/auditoria-fiscal'
     | '/app/categorias'
     | '/app/conciliacao'
     | '/app/configuracoes'
@@ -477,6 +617,7 @@ export interface FileRouteTypes {
     | '/app/marcas'
     | '/app/meu-perfil'
     | '/app/notas-fiscais'
+    | '/app/orcamentos'
     | '/app/parceiros'
     | '/app/produtos'
     | '/app/relatorios'
@@ -485,6 +626,7 @@ export interface FileRouteTypes {
     | '/app/'
     | '/api/functions/product-ai-lookup'
     | '/api/functions/send-push'
+    | '/api/functions/sync-supabase'
     | '/api/functions/test-ai-connection'
     | '/api/n8n/clients-query'
     | '/api/n8n/logs-query'
@@ -492,21 +634,30 @@ export interface FileRouteTypes {
     | '/api/n8n/partners-create'
     | '/api/n8n/products-query'
     | '/api/n8n/sales-handler'
+    | '/api/public/focus-nfe'
     | '/api/public/network-companies'
     | '/api/public/register-network-access'
     | '/api/public/stock-search'
+    | '/api/public/gmail/callback'
+    | '/api/public/google-drive/callback'
+    | '/api/public/hooks/auto-logout-tick'
+    | '/api/public/hooks/drive-upload-retry'
     | '/api/public/hooks/purge-network-access'
+    | '/api/public/reports/sales'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AppRoute: typeof AppRouteWithChildren
+  BloqueadoRoute: typeof BloqueadoRoute
+  ConfiancaRoute: typeof ConfiancaRoute
   EmpresasRoute: typeof EmpresasRoute
   LoginRoute: typeof LoginRoute
   SignupRoute: typeof SignupRoute
   SuperAdminRoute: typeof SuperAdminRoute
   ApiFunctionsProductAiLookupRoute: typeof ApiFunctionsProductAiLookupRoute
   ApiFunctionsSendPushRoute: typeof ApiFunctionsSendPushRoute
+  ApiFunctionsSyncSupabaseRoute: typeof ApiFunctionsSyncSupabaseRoute
   ApiFunctionsTestAiConnectionRoute: typeof ApiFunctionsTestAiConnectionRoute
   ApiN8nClientsQueryRoute: typeof ApiN8nClientsQueryRoute
   ApiN8nLogsQueryRoute: typeof ApiN8nLogsQueryRoute
@@ -514,10 +665,16 @@ export interface RootRouteChildren {
   ApiN8nPartnersCreateRoute: typeof ApiN8nPartnersCreateRoute
   ApiN8nProductsQueryRoute: typeof ApiN8nProductsQueryRoute
   ApiN8nSalesHandlerRoute: typeof ApiN8nSalesHandlerRoute
+  ApiPublicFocusNfeRoute: typeof ApiPublicFocusNfeRoute
   ApiPublicNetworkCompaniesRoute: typeof ApiPublicNetworkCompaniesRoute
   ApiPublicRegisterNetworkAccessRoute: typeof ApiPublicRegisterNetworkAccessRoute
   ApiPublicStockSearchRoute: typeof ApiPublicStockSearchRoute
+  ApiPublicGmailCallbackRoute: typeof ApiPublicGmailCallbackRoute
+  ApiPublicGoogleDriveCallbackRoute: typeof ApiPublicGoogleDriveCallbackRoute
+  ApiPublicHooksAutoLogoutTickRoute: typeof ApiPublicHooksAutoLogoutTickRoute
+  ApiPublicHooksDriveUploadRetryRoute: typeof ApiPublicHooksDriveUploadRetryRoute
   ApiPublicHooksPurgeNetworkAccessRoute: typeof ApiPublicHooksPurgeNetworkAccessRoute
+  ApiPublicReportsSalesRoute: typeof ApiPublicReportsSalesRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -534,6 +691,20 @@ declare module '@tanstack/react-router' {
       path: '/app'
       fullPath: '/app'
       preLoaderRoute: typeof AppRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/bloqueado': {
+      id: '/bloqueado'
+      path: '/bloqueado'
+      fullPath: '/bloqueado'
+      preLoaderRoute: typeof BloqueadoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/confianca': {
+      id: '/confianca'
+      path: '/confianca'
+      fullPath: '/confianca'
+      preLoaderRoute: typeof ConfiancaRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/empresas': {
@@ -569,6 +740,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/app/'
       preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/agenda': {
+      id: '/app/agenda'
+      path: '/agenda'
+      fullPath: '/app/agenda'
+      preLoaderRoute: typeof AppAgendaRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/auditoria-fiscal': {
+      id: '/app/auditoria-fiscal'
+      path: '/auditoria-fiscal'
+      fullPath: '/app/auditoria-fiscal'
+      preLoaderRoute: typeof AppAuditoriaFiscalRouteImport
       parentRoute: typeof AppRoute
     }
     '/app/categorias': {
@@ -669,6 +854,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppNotasFiscaisRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/orcamentos': {
+      id: '/app/orcamentos'
+      path: '/orcamentos'
+      fullPath: '/app/orcamentos'
+      preLoaderRoute: typeof AppOrcamentosRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/app/parceiros': {
       id: '/app/parceiros'
       path: '/parceiros'
@@ -716,6 +908,13 @@ declare module '@tanstack/react-router' {
       path: '/api/functions/send-push'
       fullPath: '/api/functions/send-push'
       preLoaderRoute: typeof ApiFunctionsSendPushRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/functions/sync-supabase': {
+      id: '/api/functions/sync-supabase'
+      path: '/api/functions/sync-supabase'
+      fullPath: '/api/functions/sync-supabase'
+      preLoaderRoute: typeof ApiFunctionsSyncSupabaseRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/functions/test-ai-connection': {
@@ -767,6 +966,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiN8nSalesHandlerRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/focus-nfe': {
+      id: '/api/public/focus-nfe'
+      path: '/api/public/focus-nfe'
+      fullPath: '/api/public/focus-nfe'
+      preLoaderRoute: typeof ApiPublicFocusNfeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/network-companies': {
       id: '/api/public/network-companies'
       path: '/api/public/network-companies'
@@ -788,6 +994,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicStockSearchRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/gmail/callback': {
+      id: '/api/public/gmail/callback'
+      path: '/api/public/gmail/callback'
+      fullPath: '/api/public/gmail/callback'
+      preLoaderRoute: typeof ApiPublicGmailCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/google-drive/callback': {
+      id: '/api/public/google-drive/callback'
+      path: '/api/public/google-drive/callback'
+      fullPath: '/api/public/google-drive/callback'
+      preLoaderRoute: typeof ApiPublicGoogleDriveCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/hooks/auto-logout-tick': {
+      id: '/api/public/hooks/auto-logout-tick'
+      path: '/api/public/hooks/auto-logout-tick'
+      fullPath: '/api/public/hooks/auto-logout-tick'
+      preLoaderRoute: typeof ApiPublicHooksAutoLogoutTickRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/hooks/drive-upload-retry': {
+      id: '/api/public/hooks/drive-upload-retry'
+      path: '/api/public/hooks/drive-upload-retry'
+      fullPath: '/api/public/hooks/drive-upload-retry'
+      preLoaderRoute: typeof ApiPublicHooksDriveUploadRetryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/hooks/purge-network-access': {
       id: '/api/public/hooks/purge-network-access'
       path: '/api/public/hooks/purge-network-access'
@@ -795,10 +1029,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicHooksPurgeNetworkAccessRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/reports/sales': {
+      id: '/api/public/reports/sales'
+      path: '/api/public/reports/sales'
+      fullPath: '/api/public/reports/sales'
+      preLoaderRoute: typeof ApiPublicReportsSalesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 interface AppRouteChildren {
+  AppAgendaRoute: typeof AppAgendaRoute
+  AppAuditoriaFiscalRoute: typeof AppAuditoriaFiscalRoute
   AppCategoriasRoute: typeof AppCategoriasRoute
   AppConciliacaoRoute: typeof AppConciliacaoRoute
   AppConfiguracoesRoute: typeof AppConfiguracoesRoute
@@ -813,6 +1056,7 @@ interface AppRouteChildren {
   AppMarcasRoute: typeof AppMarcasRoute
   AppMeuPerfilRoute: typeof AppMeuPerfilRoute
   AppNotasFiscaisRoute: typeof AppNotasFiscaisRoute
+  AppOrcamentosRoute: typeof AppOrcamentosRoute
   AppParceirosRoute: typeof AppParceirosRoute
   AppProdutosRoute: typeof AppProdutosRoute
   AppRelatoriosRoute: typeof AppRelatoriosRoute
@@ -822,6 +1066,8 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppAgendaRoute: AppAgendaRoute,
+  AppAuditoriaFiscalRoute: AppAuditoriaFiscalRoute,
   AppCategoriasRoute: AppCategoriasRoute,
   AppConciliacaoRoute: AppConciliacaoRoute,
   AppConfiguracoesRoute: AppConfiguracoesRoute,
@@ -836,6 +1082,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppMarcasRoute: AppMarcasRoute,
   AppMeuPerfilRoute: AppMeuPerfilRoute,
   AppNotasFiscaisRoute: AppNotasFiscaisRoute,
+  AppOrcamentosRoute: AppOrcamentosRoute,
   AppParceirosRoute: AppParceirosRoute,
   AppProdutosRoute: AppProdutosRoute,
   AppRelatoriosRoute: AppRelatoriosRoute,
@@ -849,12 +1096,15 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AppRoute: AppRouteWithChildren,
+  BloqueadoRoute: BloqueadoRoute,
+  ConfiancaRoute: ConfiancaRoute,
   EmpresasRoute: EmpresasRoute,
   LoginRoute: LoginRoute,
   SignupRoute: SignupRoute,
   SuperAdminRoute: SuperAdminRoute,
   ApiFunctionsProductAiLookupRoute: ApiFunctionsProductAiLookupRoute,
   ApiFunctionsSendPushRoute: ApiFunctionsSendPushRoute,
+  ApiFunctionsSyncSupabaseRoute: ApiFunctionsSyncSupabaseRoute,
   ApiFunctionsTestAiConnectionRoute: ApiFunctionsTestAiConnectionRoute,
   ApiN8nClientsQueryRoute: ApiN8nClientsQueryRoute,
   ApiN8nLogsQueryRoute: ApiN8nLogsQueryRoute,
@@ -862,20 +1112,27 @@ const rootRouteChildren: RootRouteChildren = {
   ApiN8nPartnersCreateRoute: ApiN8nPartnersCreateRoute,
   ApiN8nProductsQueryRoute: ApiN8nProductsQueryRoute,
   ApiN8nSalesHandlerRoute: ApiN8nSalesHandlerRoute,
+  ApiPublicFocusNfeRoute: ApiPublicFocusNfeRoute,
   ApiPublicNetworkCompaniesRoute: ApiPublicNetworkCompaniesRoute,
   ApiPublicRegisterNetworkAccessRoute: ApiPublicRegisterNetworkAccessRoute,
   ApiPublicStockSearchRoute: ApiPublicStockSearchRoute,
+  ApiPublicGmailCallbackRoute: ApiPublicGmailCallbackRoute,
+  ApiPublicGoogleDriveCallbackRoute: ApiPublicGoogleDriveCallbackRoute,
+  ApiPublicHooksAutoLogoutTickRoute: ApiPublicHooksAutoLogoutTickRoute,
+  ApiPublicHooksDriveUploadRetryRoute: ApiPublicHooksDriveUploadRetryRoute,
   ApiPublicHooksPurgeNetworkAccessRoute: ApiPublicHooksPurgeNetworkAccessRoute,
+  ApiPublicReportsSalesRoute: ApiPublicReportsSalesRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
 
 import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
+import type { startInstance } from './start.ts'
 declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
     router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
   }
 }

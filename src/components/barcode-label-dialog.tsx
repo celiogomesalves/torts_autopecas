@@ -31,7 +31,7 @@ import {
 } from "./label-templates-config";
 import { fetchBarcodeLabels } from "@/lib/barcode-labels";
 import { toast } from "sonner";
-import { appwrite } from "@/integrations/appwrite/client";
+import { supabase } from "@/integrations/supabase/client";
 
 interface Props {
   open: boolean;
@@ -111,7 +111,7 @@ export function BarcodeLabelDialog({
       // 2) Configurações da UI
       let settings: any = null;
       try {
-        const { data, error } = await appwrite
+        const { data, error } = await supabase
           .from("company_settings" as any)
           .select("barcode_label_config" as any)
           .eq("company_id", companyId)
@@ -181,7 +181,7 @@ export function BarcodeLabelDialog({
 
       try {
         console.log("Saving barcode label config to DB:", config);
-        const { error } = await appwrite.from("company_settings" as any).upsert(
+        const { error } = await supabase.from("company_settings" as any).upsert(
           {
             company_id: companyId,
             barcode_label_config: config,
