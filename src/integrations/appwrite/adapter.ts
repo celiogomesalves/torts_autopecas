@@ -43,12 +43,14 @@ export class AppwriteQueryBuilder<T = any> {
   private isSingle = false;
   private isMaybeSingle = false;
   private pendingFilters: Array<(doc: any) => boolean> = [];
+  private selectColumns = "*";
 
   constructor(collectionId: string) {
     this.collectionId = collectionId;
   }
 
-  select(_columns = "*", _options?: any) {
+  select(columns = "*", _options?: any) {
+    this.selectColumns = columns;
     return this;
   }
 
@@ -70,6 +72,69 @@ export class AppwriteQueryBuilder<T = any> {
     if (!values || values.length === 0) return this;
     const targetCol = column === "id" ? "$id" : column;
     this.queries.push(Query.equal(targetCol, values));
+    return this;
+  }
+
+  is(column: string, value: any) {
+    const targetCol = column === "id" ? "$id" : column;
+    if (value === null || value === undefined) {
+      this.pendingFilters.push((doc: any) => doc[targetCol] === null || doc[targetCol] === undefined);
+    } else {
+      this.eq(column, value);
+    }
+    return this;
+  }
+
+  not(column: string, operator: string, value: any) {
+    if (operator === "is" && (value === null || value === undefined)) {
+      this.pendingFilters.push((doc: any) => doc[column] !== null && doc[column] !== undefined);
+    } else {
+      this.neq(column, value);
+    }
+    return this;
+  }
+
+  contains(column: string, value: any) {
+    this.pendingFilters.push((doc: any) => {
+      const val = doc[column];
+      if (Array.isArray(val)) {
+        return Array.isArray(value) ? value.every((v) => val.includes(v)) : val.includes(value);
+      }
+      return false;
+    });
+    return this;
+  }
+
+  or(conditionStr: string) {
+    if (!conditionStr || typeof conditionStr !== "string") return this;
+    const parts = conditionStr.split(",").map((p) => p.trim()).filter(Boolean);
+    if (parts.length === 0) return this;
+
+    this.pendingFilters.push((doc: any) => {
+      return parts.some((part) => {
+        // Formatos comuns: col.eq.val, col.ilike.%val%, col.neq.val, col.is.null
+        const match = part.match(/^([a-zA-Z0-9_$]+)\.([a-z]+)\.(.*)$/);
+        if (!match) return false;
+        const [, col, op, rawVal] = match;
+        const docVal = doc[col] ?? (col === "id" ? doc.$id : undefined);
+
+        if (op === "eq") {
+          return String(docVal) === String(rawVal);
+        }
+        if (op === "neq") {
+          return String(docVal) !== String(rawVal);
+        }
+        if (op === "ilike" || op === "like") {
+          const clean = rawVal.replace(/%/g, "").toLowerCase();
+          return String(docVal || "").toLowerCase().includes(clean);
+        }
+        if (op === "is") {
+          if (rawVal === "null") return docVal === null || docVal === undefined;
+          return docVal === rawVal;
+        }
+        return false;
+      });
+    });
     return this;
   }
 
@@ -168,6 +233,47 @@ export class AppwriteQueryBuilder<T = any> {
       let docs = res.documents.map(normalizeDoc);
       if (this.pendingFilters.length > 0) {
         docs = docs.filter((doc) => this.pendingFilters.every((fn) => fn(doc)));
+      }
+
+      // Enriquecimento de relacionamentos com profiles (operadores / vendedores)
+      if (
+        (this.collectionId === "cash_registers" && this.selectColumns?.includes("profiles")) ||
+        (this.collectionId === "sales" && this.selectColumns?.includes("profiles"))
+      ) {
+        const uids = Array.from(
+          new Set(
+            docs
+              .map((d: any) => d.user_id_open || d.user_id_close || d.created_by)
+              .filter(Boolean),
+          ),
+        );
+        if (uids.length > 0) {
+          try {
+            const pRes = await databases.listDocuments(APPWRITE_DATABASE_ID, "profiles", [
+              Query.equal("$id", uids),
+              Query.limit(uids.length),
+            ]);
+            const pMap = new Map(
+              pRes.documents.map((p: any) => [
+                p.$id,
+                { name: p.name || "", email: p.email || "" },
+              ]),
+            );
+            docs = docs.map((d: any) => {
+              const prof =
+                pMap.get(d.user_id_open) ||
+                pMap.get(d.user_id_close) ||
+                pMap.get(d.created_by) ||
+                { name: "Operador", email: "" };
+              return { ...d, profiles: prof };
+            });
+          } catch {
+            docs = docs.map((d: any) => ({
+              ...d,
+              profiles: d.profiles || { name: "Operador", email: "" },
+            }));
+          }
+        }
       }
 
       if (this.isSingle) {
