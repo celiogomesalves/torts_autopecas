@@ -74,14 +74,15 @@ function CompaniesPage() {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      if (session?.access_token) {
+      const s = session as any;
+      if (s?.access_token) {
         console.log("Registrando acesso de rede para empresa:", companyId);
         const res = await fetch("/api/public/register-network-access", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             company_id: companyId,
-            access_token: session.access_token,
+            access_token: s.access_token,
           }),
         });
         const result = await res.json();

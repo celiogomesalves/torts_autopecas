@@ -230,23 +230,65 @@ export async function fetchMyCompanies(userIdOrContext?: string | any): Promise<
   }
 
   if (!finalUserId) {
-    const { data: { user } } = await supabase.auth.getUser();
-    finalUserId = user?.id;
+    const { data } = await supabase.auth.getUser();
+    finalUserId = data?.user?.id;
+  }
+  if (!finalUserId) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    finalUserId = sessionData?.session?.user?.id;
   }
   if (!finalUserId) return [];
 
-  const { data, error } = await db
+  // 1. Busca os memberships do usuário
+  const { data: memberships, error: mError } = await db
     .from("memberships")
-    .select(`is_blocked, role, company:companies(${COMPANY_SAFE_SELECT})`)
+    .select("*")
     .eq("user_id", finalUserId);
 
-  if (error) throw error;
+  if (mError) throw mError;
+  const userMemberships = memberships ?? [];
 
-  return (data ?? []).map((m: any) => ({
-    ...m.company,
-    is_blocked: m.is_blocked,
-    role: m.role
-  }));
+  // 2. Extrai os IDs das empresas dos memberships
+  const companyIds = userMemberships
+    .map((m: any) => m.company_id)
+    .filter(Boolean);
+
+  // 3. Verifica se é super admin para garantir acesso
+  const isSuper = await isSuperAdmin().catch(() => false);
+
+  let companies: any[] = [];
+  if (isSuper) {
+    // Super admin tem acesso a todas as empresas cadastradas
+    const { data: allComps, error: cError } = await db
+      .from("companies")
+      .select("*");
+    if (cError) throw cError;
+    companies = allComps ?? [];
+  } else if (companyIds.length > 0) {
+    const { data: userComps, error: cError } = await db
+      .from("companies")
+      .select("*")
+      .in("id", companyIds);
+    if (cError) throw cError;
+    companies = userComps ?? [];
+  } else {
+    return [];
+  }
+
+  const membershipMap = new Map<string, any>(
+    userMemberships.map((m: any) => [m.company_id, m])
+  );
+
+  return companies.map((c: any) => {
+    const m = membershipMap.get(c.id || c.$id);
+    return {
+      ...c,
+      id: c.id || c.$id,
+      name: c.name || "Empresa",
+      is_blocked: m ? (m.is_blocked ?? false) : false,
+      role: m ? (m.role || "vendedor") : (isSuper ? "admin" : "vendedor"),
+    };
+  });
 }
 
 export async function fetchMyCompanyRole(companyId: string): Promise<string | null> {
