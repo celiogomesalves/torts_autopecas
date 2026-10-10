@@ -1590,23 +1590,57 @@ function DeliveryWebhooksTab() {
 
   const testMut = useMutation({
     mutationFn: async () => {
-      const { data, error } = await supabase.functions.invoke("n8n-delivery-webhook", {
-        body: {
+      const targetUrl = edgeUrl.trim() || "/api/n8n/sales-handler";
+      const payload = {
+        event: "test_event",
+        company_id: testCompanyId || null,
+        delivery_id: null,
+        test: true,
+        message: "Teste de webhook enviado pelo Super Admin",
+        timestamp: new Date().toISOString(),
+      };
+      let resData: any = null;
+      try {
+        const res = await fetch(targetUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(internalToken ? { "x-internal-token": internalToken, "x-api-key": internalToken } : {}),
+          },
+          body: JSON.stringify(payload),
+        });
+        const text = await res.text();
+        let body: any;
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = { raw: text };
+        }
+        resData = { ok: res.ok, status: res.status, body };
+      } catch (err: any) {
+        resData = { ok: false, error: err.message, status: 0 };
+      }
+
+      try {
+        await supabase.from("webhook_deliveries" as any).insert({
           event: "test_event",
           company_id: testCompanyId || null,
-          delivery_id: null,
-          test: true,
-          message: "Teste de webhook enviado pelo Super Admin",
-          timestamp: new Date().toISOString(),
-        },
-        headers: { "x-internal-token": internalToken },
-      });
-      if (error) throw error;
-      return data;
+          payload,
+          status: resData.status,
+          response_body:
+            typeof resData.body === "object"
+              ? JSON.stringify(resData.body)
+              : String(resData.body || resData.error || ""),
+        });
+      } catch {
+        // ignora
+      }
+
+      return resData;
     },
     onSuccess: (data: any) => {
       if (data?.ok) toast.success(`Webhook enviado (status ${data.status})`);
-      else toast.error(`Falha: ${data?.error ?? "erro desconhecido"}`);
+      else toast.error(`Falha: ${data?.error ?? data?.status ?? "erro desconhecido"}`);
       qc.invalidateQueries({ queryKey: ["webhook-deliveries"] });
     },
     onError: (e: Error) => toast.error(e.message),
@@ -1629,12 +1663,23 @@ function DeliveryWebhooksTab() {
 
   const retryMut = useMutation({
     mutationFn: async (row: any) => {
-      const { data, error } = await supabase.functions.invoke("n8n-delivery-webhook", {
-        body: row.payload,
-        headers: { "x-internal-token": internalToken },
+      const targetUrl = edgeUrl.trim() || "/api/n8n/sales-handler";
+      const res = await fetch(targetUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(internalToken ? { "x-internal-token": internalToken, "x-api-key": internalToken } : {}),
+        },
+        body: JSON.stringify(row.payload),
       });
-      if (error) throw error;
-      return data;
+      const text = await res.text();
+      let body: any;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = { raw: text };
+      }
+      return { ok: res.ok, status: res.status, body };
     },
     onSuccess: () => {
       toast.success("Reenviado");

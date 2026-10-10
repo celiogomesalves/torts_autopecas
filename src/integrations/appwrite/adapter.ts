@@ -226,10 +226,22 @@ export class AppwriteQueryBuilder<T = any> {
     onrejected?: ((reason: any) => any) | null,
   ): Promise<any> {
     try {
+      const queries = [...this.queries];
+      if (this.isSingle || this.isMaybeSingle) {
+        queries.push(Query.limit(1));
+      } else {
+        const hasLimit = queries.some(
+          (q) => typeof q === "string" && (q.includes('"method":"limit"') || q.includes("limit(")),
+        );
+        if (!hasLimit) {
+          queries.push(Query.limit(5000));
+        }
+      }
+
       const res = await this.dbInstance.listDocuments(
         APPWRITE_DATABASE_ID,
         this.collectionId,
-        this.queries,
+        queries,
       );
 
       let docs = res.documents.map(normalizeDoc);
@@ -385,6 +397,46 @@ export class AppwriteQueryBuilder<T = any> {
             } catch {
               // Documento novo
             }
+          } else if (_options?.onConflict) {
+            const conflictCols = String(_options.onConflict)
+              .split(",")
+              .map((c: string) => c.trim())
+              .filter(Boolean);
+            const conflictQueries = conflictCols
+              .filter((c: string) => raw[c] !== undefined && raw[c] !== null)
+              .map((c: string) => Query.equal(c === "id" ? "$id" : c, raw[c]));
+            if (conflictQueries.length === conflictCols.length && conflictQueries.length > 0) {
+              try {
+                const list = await self.dbInstance.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
+                  ...conflictQueries,
+                  Query.limit(1),
+                ]);
+                if (list.documents.length > 0) existingDocId = list.documents[0].$id;
+              } catch {
+                // ignora
+              }
+            }
+          } else if (raw.role_id && raw.module) {
+            try {
+              const list = await self.dbInstance.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
+                Query.equal("role_id", raw.role_id),
+                Query.equal("module", raw.module),
+                Query.limit(1),
+              ]);
+              if (list.documents.length > 0) existingDocId = list.documents[0].$id;
+            } catch {
+              // Ignora
+            }
+          } else if (raw.key) {
+            try {
+              const list = await self.dbInstance.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
+                Query.equal("key", raw.key),
+                Query.limit(1),
+              ]);
+              if (list.documents.length > 0) existingDocId = list.documents[0].$id;
+            } catch {
+              // Ignora
+            }
           } else if (raw.company_id) {
             try {
               const list = await self.dbInstance.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
@@ -399,6 +451,7 @@ export class AppwriteQueryBuilder<T = any> {
 
           if (existingDocId) {
             delete data.id;
+            data.updated_at = new Date().toISOString();
             const updated = await self.dbInstance.updateDocument(
               APPWRITE_DATABASE_ID,
               self.collectionId,
@@ -408,6 +461,9 @@ export class AppwriteQueryBuilder<T = any> {
             results.push(normalizeDoc(updated));
           } else {
             const docId = raw.id || ID.unique();
+            data.id = docId;
+            data.created_at = new Date().toISOString();
+            data.updated_at = new Date().toISOString();
             const created = await self.dbInstance.createDocument(
               APPWRITE_DATABASE_ID,
               self.collectionId,

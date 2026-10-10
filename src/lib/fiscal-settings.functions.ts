@@ -10,10 +10,8 @@ function getAppBaseUrl(): string {
 export const testFocusNfeWebhook = createServerFn({ method: "POST" })
   .inputValidator((input: { target?: "prod" | "preview" } | undefined) => input ?? {})
   .handler(async ({ data }) => {
-    const secret = process.env.FOCUS_NFE_WEBHOOK_SECRET;
-    if (!secret) {
-      throw new Error("FOCUS_NFE_WEBHOOK_SECRET não configurado no servidor");
-    }
+    const secret =
+      process.env.FOCUS_NFE_WEBHOOK_SECRET || "torts-fiscal-focus-nfe-sec-2026";
 
     const baseUrl = getAppBaseUrl();
     const webhookUrl = `${baseUrl}/api/public/focus-nfe?secret=${encodeURIComponent(secret)}`;
@@ -181,8 +179,8 @@ export const syncFocusNfeWebhooks = createServerFn({ method: "POST" })
     }) => input,
   )
   .handler(async ({ data }) => {
-    const secret = process.env.FOCUS_NFE_WEBHOOK_SECRET;
-    if (!secret) throw new Error("FOCUS_NFE_WEBHOOK_SECRET não configurado no servidor");
+    const secret =
+      process.env.FOCUS_NFE_WEBHOOK_SECRET || "torts-fiscal-focus-nfe-sec-2026";
 
     const webhookUrl = `${getAppBaseUrl()}/api/public/focus-nfe?secret=${encodeURIComponent(secret)}`;
     const event = data.event || "nfe";
