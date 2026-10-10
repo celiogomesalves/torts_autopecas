@@ -253,18 +253,9 @@ export async function fetchMyCompanies(userIdOrContext?: string | any): Promise<
     .map((m: any) => m.company_id)
     .filter(Boolean);
 
-  // 3. Verifica se é super admin para garantir acesso
-  const isSuper = await isSuperAdmin().catch(() => false);
-
   let companies: any[] = [];
-  if (isSuper) {
-    // Super admin tem acesso a todas as empresas cadastradas
-    const { data: allComps, error: cError } = await db
-      .from("companies")
-      .select("*");
-    if (cError) throw cError;
-    companies = allComps ?? [];
-  } else if (companyIds.length > 0) {
+  if (companyIds.length > 0) {
+    // Retorna apenas as empresas onde o usuário realmente é membro
     const { data: userComps, error: cError } = await db
       .from("companies")
       .select("*")
@@ -272,7 +263,17 @@ export async function fetchMyCompanies(userIdOrContext?: string | any): Promise<
     if (cError) throw cError;
     companies = userComps ?? [];
   } else {
-    return [];
+    // Caso de fallback: super admin sem nenhum membership cadastrado
+    const isSuper = await isSuperAdmin().catch(() => false);
+    if (isSuper) {
+      const { data: allComps, error: cError } = await db
+        .from("companies")
+        .select("*");
+      if (cError) throw cError;
+      companies = allComps ?? [];
+    } else {
+      return [];
+    }
   }
 
   const membershipMap = new Map<string, any>(
