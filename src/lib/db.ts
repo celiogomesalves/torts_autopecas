@@ -2781,13 +2781,28 @@ export async function fetchCompanyRoles(companyId: string): Promise<CompanyRoleW
     .select("*")
     .in("role_id", ids);
   if (pErr) throw pErr;
-  const map = new Map<string, RolePermission[]>();
+  const map = new Map<string, Map<string, RolePermission>>();
   for (const p of (perms ?? []) as RolePermission[]) {
-    const arr = map.get(p.role_id) ?? [];
-    arr.push(p);
-    map.set(p.role_id, arr);
+    if (!map.has(p.role_id)) {
+      map.set(p.role_id, new Map());
+    }
+    const roleMap = map.get(p.role_id)!;
+    const existing = roleMap.get(p.module);
+    if (!existing) {
+      roleMap.set(p.module, p);
+    } else {
+      // Se houver duplicata, mantém o mais recente (ou o que tem updated_at)
+      const existingDate = (existing as any).updated_at || (existing as any).$updatedAt || "";
+      const pDate = (p as any).updated_at || (p as any).$updatedAt || "";
+      if (pDate >= existingDate) {
+        roleMap.set(p.module, p);
+      }
+    }
   }
-  return list.map((r) => ({ ...r, permissions: map.get(r.id) ?? [] }));
+  return list.map((r) => ({
+    ...r,
+    permissions: Array.from(map.get(r.id)?.values() ?? []),
+  }));
 }
 
 export async function createCompanyRole(input: {
@@ -2864,6 +2879,8 @@ export async function upsertRolePermission(input: {
   return data as RolePermission;
 }
 
+import { saveRolePermissionsBatchFn } from "./role-permissions.functions";
+
 export async function upsertRolePermissionsBatch(inputs: Array<{
   role_id: string;
   module: string;
@@ -2873,10 +2890,15 @@ export async function upsertRolePermissionsBatch(inputs: Array<{
   can_delete: boolean;
 }>): Promise<void> {
   if (!inputs.length) return;
-  const { error } = await db
-    .from("role_permissions")
-    .upsert(inputs, { onConflict: "role_id,module" });
-  if (error) throw error;
+  try {
+    await saveRolePermissionsBatchFn({ data: { permissions: inputs } });
+  } catch (err) {
+    console.warn("[upsertRolePermissionsBatch] serverFn error, falling back to direct db upsert:", err);
+    const { error } = await db
+      .from("role_permissions")
+      .upsert(inputs, { onConflict: "role_id,module" });
+    if (error) throw error;
+  }
 }
 
 export async function hasPermission(companyId: string, module: string, action: PermissionAction): Promise<boolean> {
