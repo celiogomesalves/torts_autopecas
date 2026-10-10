@@ -690,7 +690,7 @@ function SystemSettingsTab() {
                 id="base_url"
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder="https://sua-loja.lovable.app"
+                placeholder="https://sua-empresa.com.br"
               />
               <Button
                 onClick={() => updateMut.mutate(baseUrl)}
@@ -888,7 +888,7 @@ function BrandingCard() {
 }
 function N8nIntegrationTab() {
   const [supabaseUrl] = useState(
-    () => (window as any).env?.SUPABASE_URL || "https://sua-url.supabase.co",
+    () => (typeof window !== "undefined" ? window.location.origin : "https://torts-autopecas.vercel.app"),
   );
   const [infoDialog, setInfoDialog] = useState<{
     title: string;
@@ -1683,7 +1683,7 @@ function DeliveryWebhooksTab() {
               value={edgeUrl}
               onChange={(e) => setEdgeUrl(e.target.value)}
               disabled={fieldsDisabled}
-              placeholder="https://oapfhdcvugcileuxumpb.supabase.co/functions/v1/n8n-delivery-webhook"
+              placeholder="https://torts-autopecas.vercel.app/api/n8n/sales-handler"
             />
             <p className="text-xs text-muted-foreground">
               O trigger Postgres chama este endpoint. Cole a URL pública da função.

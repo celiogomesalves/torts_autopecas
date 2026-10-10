@@ -165,33 +165,26 @@ export const Route = createFileRoute("/api/public/reports/sales")({
         const started = Date.now();
         const url = new URL(request.url);
         const companyId = (url.searchParams.get("companyId") ?? "").trim();
-        const { serviceKey, supabaseUrl, publishable } = getServerEnv();
-
+        const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
         let dbOk: boolean | null = null;
         let lastExecution: unknown = null;
 
-        if (serviceKey) {
-          try {
-            const { createClient } = await import("@supabase/supabase-js");
-            const supabase = createClient(supabaseUrl, serviceKey, {
-              auth: { persistSession: false, autoRefreshToken: false },
-            });
-            const { error } = await supabase.from("companies").select("id").limit(1);
-            dbOk = !error;
+        try {
+          const { error } = await supabaseAdmin.from("companies").select("id").limit(1);
+          dbOk = !error;
 
-            if (companyId) {
-              const { data } = await supabase
-                .from("activity_logs")
-                .select("created_at, meta")
-                .eq("company_id", companyId)
-                .eq("action", "reports_sales_pdf")
-                .order("created_at", { ascending: false })
-                .limit(1);
-              lastExecution = data?.[0] ?? null;
-            }
-          } catch {
-            dbOk = false;
+          if (companyId) {
+            const { data } = await supabaseAdmin
+              .from("activity_logs")
+              .select("created_at, meta")
+              .eq("company_id", companyId)
+              .eq("action", "reports_sales_pdf")
+              .order("created_at", { ascending: false })
+              .limit(1);
+            lastExecution = data?.[0] ?? null;
           }
+        } catch {
+          dbOk = false;
         }
 
         const healthy = Boolean(serviceKey) && dbOk !== false;
@@ -270,17 +263,7 @@ export const Route = createFileRoute("/api/public/reports/sales")({
           );
         }
 
-        const { serviceKey, supabaseUrl } = getServerEnv();
-        if (!serviceKey) {
-          return json(
-            { ok: false, error: "SUPABASE_SERVICE_ROLE_KEY não configurada no servidor" },
-            500,
-          );
-        }
-        const { createClient } = await import("@supabase/supabase-js");
-        const supabase = createClient(supabaseUrl, serviceKey, {
-          auth: { persistSession: false, autoRefreshToken: false },
-        });
+        const { supabaseAdmin: supabase } = await import("@/integrations/supabase/client.server");
 
 
         const { data: company, error: companyErr } = await supabase

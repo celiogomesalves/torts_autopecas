@@ -22,20 +22,17 @@ type EnvCheck = {
   lastExecution?: { created_at: string; meta: Record<string, any> | null } | null;
 };
 
-const PREVIEW_ORIGIN = "https://id-preview--54df0fe6-5eb6-44d7-8103-7686e7f4ca70.lovable.app";
-const PUBLISHED_ORIGIN = "https://torqueautopecas.lovable.app";
+const VERCEL_PROD_ORIGIN = "https://torts-autopecas.vercel.app";
 const CUSTOM_DOMAIN_ORIGIN = "https://tortsautopecas.agenc-ia.net";
 
 function baseEnvironments(): { label: string; origin: string }[] {
   const current = typeof window !== "undefined" ? window.location.origin : "";
   const list = [
-    { label: "Preview", origin: PREVIEW_ORIGIN },
-    { label: "Produção", origin: CUSTOM_DOMAIN_ORIGIN },
-    { label: "Publicado (Lovable)", origin: PUBLISHED_ORIGIN },
+    { label: "Produção (Vercel)", origin: VERCEL_PROD_ORIGIN },
+    { label: "Domínio Próprio", origin: CUSTOM_DOMAIN_ORIGIN },
   ];
-  const isEditorPreview = current.endsWith(".lovableproject.com");
-  if (current && !isEditorPreview && !list.some((e) => e.origin === current)) {
-    list.unshift({ label: "Origem atual", origin: current });
+  if (current && !list.some((e) => e.origin === current)) {
+    list.unshift({ label: "Origem Atual", origin: current });
   }
   return list;
 }

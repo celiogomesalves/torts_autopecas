@@ -1,9 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
 
-// URLs estáveis Lovable (Worker não consegue chamar a própria preview URL — SSRF).
-// Usamos a URL pública estável do projeto.
-const STABLE_PROD_URL = "https://project--54df0fe6-5eb6-44d7-8103-7686e7f4ca70.lovable.app";
-const STABLE_PREVIEW_URL = "https://project--54df0fe6-5eb6-44d7-8103-7686e7f4ca70-dev.lovable.app";
+function getAppBaseUrl(): string {
+  if (process.env.APP_BASE_URL) return process.env.APP_BASE_URL.replace(/\/$/, "");
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return "https://torts-autopecas.vercel.app";
+}
 
 export const testFocusNfeWebhook = createServerFn({ method: "POST" })
   .inputValidator((input: { target?: "prod" | "preview" } | undefined) => input ?? {})
@@ -13,7 +15,7 @@ export const testFocusNfeWebhook = createServerFn({ method: "POST" })
       throw new Error("FOCUS_NFE_WEBHOOK_SECRET não configurado no servidor");
     }
 
-    const baseUrl = data.target === "preview" ? STABLE_PREVIEW_URL : STABLE_PROD_URL;
+    const baseUrl = getAppBaseUrl();
     const webhookUrl = `${baseUrl}/api/public/focus-nfe?secret=${encodeURIComponent(secret)}`;
 
     const testPayload = {
@@ -182,7 +184,7 @@ export const syncFocusNfeWebhooks = createServerFn({ method: "POST" })
     const secret = process.env.FOCUS_NFE_WEBHOOK_SECRET;
     if (!secret) throw new Error("FOCUS_NFE_WEBHOOK_SECRET não configurado no servidor");
 
-    const webhookUrl = `${STABLE_PROD_URL}/api/public/focus-nfe?secret=${encodeURIComponent(secret)}`;
+    const webhookUrl = `${getAppBaseUrl()}/api/public/focus-nfe?secret=${encodeURIComponent(secret)}`;
     const event = data.event || "nfe";
 
     const results: HookRow[] = [];

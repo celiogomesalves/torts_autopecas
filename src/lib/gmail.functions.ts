@@ -10,7 +10,6 @@ function pickRedirectUri(origin?: string | null): string {
       if (
         u.hostname === "localhost" ||
         u.hostname.endsWith(".vercel.app") ||
-        u.hostname.endsWith(".lovable.app") ||
         u.hostname.endsWith(".agenc-ia.net") ||
         u.hostname === "torts-autopecas.vercel.app"
       ) {

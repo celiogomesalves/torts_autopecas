@@ -58,7 +58,7 @@ self.addEventListener("push", (event: any) => {
     const title = payload.title || "AutoPeças ERP";
     const options: NotificationOptions = {
       body: payload.body || "",
-      icon: payload.icon || "https://cdn.lovable.dev/pwa-icon-192.png",
+      icon: payload.icon || "/favicon.ico",
       badge: payload.badge || "/favicon.ico",
       data: payload.data || {},
     };

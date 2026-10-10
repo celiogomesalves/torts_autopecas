@@ -31,8 +31,8 @@ export function PwaInstaller() {
   };
 
   useEffect(() => {
-    // Don't show in iframes or Lovable preview
-    if (window.self !== window.top || window.location.hostname.includes("lovable.app")) {
+    // Don't show in iframes
+    if (window.self !== window.top) {
       return;
     }
 

@@ -57,16 +57,8 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       { name: "twitter:title", content: "AutoPeças ERP" },
       { property: "og:description", content: "ERP multiempresa para auto peças" },
       { name: "twitter:description", content: "ERP multiempresa para auto peças" },
-      {
-        property: "og:image",
-        content:
-          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/68ff9c55-3229-4f97-8583-be42b8ba2278/id-preview-656f0818--54df0fe6-5eb6-44d7-8103-7686e7f4ca70.lovable.app-1776826994237.png",
-      },
-      {
-        name: "twitter:image",
-        content:
-          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/68ff9c55-3229-4f97-8583-be42b8ba2278/id-preview-656f0818--54df0fe6-5eb6-44d7-8103-7686e7f4ca70.lovable.app-1776826994237.png",
-      },
+      { property: "og:image", content: "/favicon.ico" },
+      { name: "twitter:image", content: "/favicon.ico" },
       { name: "twitter:card", content: "summary_large_image" },
       { property: "og:type", content: "website" },
     ],

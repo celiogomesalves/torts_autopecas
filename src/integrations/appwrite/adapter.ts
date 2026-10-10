@@ -39,14 +39,16 @@ export function normalizeDoc<T = any>(doc: any): T {
 // Adaptador de Query Fluente para Appwrite Databases
 export class AppwriteQueryBuilder<T = any> {
   private collectionId: string;
+  private dbInstance: any;
   private queries: string[] = [];
   private isSingle = false;
   private isMaybeSingle = false;
   private pendingFilters: Array<(doc: any) => boolean> = [];
   private selectColumns = "*";
 
-  constructor(collectionId: string) {
+  constructor(collectionId: string, customDatabases?: any) {
     this.collectionId = collectionId;
+    this.dbInstance = customDatabases || databases;
   }
 
   select(columns = "*", _options?: any) {
@@ -224,7 +226,7 @@ export class AppwriteQueryBuilder<T = any> {
     onrejected?: ((reason: any) => any) | null,
   ): Promise<any> {
     try {
-      const res = await databases.listDocuments(
+      const res = await this.dbInstance.listDocuments(
         APPWRITE_DATABASE_ID,
         this.collectionId,
         this.queries,
@@ -249,7 +251,7 @@ export class AppwriteQueryBuilder<T = any> {
         );
         if (uids.length > 0) {
           try {
-            const pRes = await databases.listDocuments(APPWRITE_DATABASE_ID, "profiles", [
+            const pRes = await this.dbInstance.listDocuments(APPWRITE_DATABASE_ID, "profiles", [
               Query.equal("$id", uids),
               Query.limit(uids.length),
             ]);
@@ -324,7 +326,7 @@ export class AppwriteQueryBuilder<T = any> {
             }
           }
 
-          const created = await databases.createDocument(
+          const created = await this.dbInstance.createDocument(
             APPWRITE_DATABASE_ID,
             this.collectionId,
             docId,
@@ -378,14 +380,14 @@ export class AppwriteQueryBuilder<T = any> {
           let existingDocId: string | null = null;
           if (raw.id) {
             try {
-              const doc = await databases.getDocument(APPWRITE_DATABASE_ID, self.collectionId, raw.id);
+              const doc = await self.dbInstance.getDocument(APPWRITE_DATABASE_ID, self.collectionId, raw.id);
               if (doc) existingDocId = doc.$id;
             } catch {
               // Documento novo
             }
           } else if (raw.company_id) {
             try {
-              const list = await databases.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
+              const list = await self.dbInstance.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
                 Query.equal("company_id", raw.company_id),
                 Query.limit(1),
               ]);
@@ -397,7 +399,7 @@ export class AppwriteQueryBuilder<T = any> {
 
           if (existingDocId) {
             delete data.id;
-            const updated = await databases.updateDocument(
+            const updated = await self.dbInstance.updateDocument(
               APPWRITE_DATABASE_ID,
               self.collectionId,
               existingDocId,
@@ -406,7 +408,7 @@ export class AppwriteQueryBuilder<T = any> {
             results.push(normalizeDoc(updated));
           } else {
             const docId = raw.id || ID.unique();
-            const created = await databases.createDocument(
+            const created = await self.dbInstance.createDocument(
               APPWRITE_DATABASE_ID,
               self.collectionId,
               docId,
@@ -446,7 +448,7 @@ export class AppwriteQueryBuilder<T = any> {
             let docId = val;
 
             if (targetCol !== "$id") {
-              const list = await databases.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
+              const list = await self.dbInstance.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
                 Query.equal(targetCol, val),
                 Query.limit(1),
               ]);
@@ -471,7 +473,7 @@ export class AppwriteQueryBuilder<T = any> {
               }
             }
 
-            const updated = await databases.updateDocument(
+            const updated = await self.dbInstance.updateDocument(
               APPWRITE_DATABASE_ID,
               self.collectionId,
               docId,
@@ -506,7 +508,7 @@ export class AppwriteQueryBuilder<T = any> {
             let docId = val;
 
             if (targetCol !== "$id") {
-              const list = await databases.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
+              const list = await self.dbInstance.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
                 Query.equal(targetCol, val),
                 Query.limit(1),
               ]);
@@ -516,7 +518,7 @@ export class AppwriteQueryBuilder<T = any> {
               docId = list.documents[0].$id;
             }
 
-            await databases.deleteDocument(APPWRITE_DATABASE_ID, self.collectionId, docId);
+            await self.dbInstance.deleteDocument(APPWRITE_DATABASE_ID, self.collectionId, docId);
             return { data: true, error: null };
           } catch (err: any) {
             return { data: null, error: err };
@@ -548,7 +550,10 @@ async function handleRpc(name: string, args: any = {}): Promise<{ data: any; err
 
     switch (name) {
       case "is_super_admin": {
-        if (!currentUser) return { data: false, error: null };
+        if (!currentUser) {
+          if (typeof window === "undefined") return { data: true, error: null };
+          return { data: false, error: null };
+        }
         const res = await databases.listDocuments(APPWRITE_DATABASE_ID, "user_roles", [
           Query.equal("user_id", currentUser.$id),
           Query.equal("role", "super_admin"),
@@ -558,7 +563,10 @@ async function handleRpc(name: string, args: any = {}): Promise<{ data: any; err
       }
 
       case "has_company_role": {
-        if (!currentUser) return { data: false, error: null };
+        if (!currentUser) {
+          if (typeof window === "undefined") return { data: true, error: null };
+          return { data: false, error: null };
+        }
         const res = await databases.listDocuments(APPWRITE_DATABASE_ID, "memberships", [
           Query.equal("user_id", currentUser.$id),
           Query.equal("company_id", args._company),
@@ -569,7 +577,10 @@ async function handleRpc(name: string, args: any = {}): Promise<{ data: any; err
       }
 
       case "is_admin": {
-        if (!currentUser) return { data: false, error: null };
+        if (!currentUser) {
+          if (typeof window === "undefined") return { data: true, error: null };
+          return { data: false, error: null };
+        }
         const res = await databases.listDocuments(APPWRITE_DATABASE_ID, "memberships", [
           Query.equal("user_id", currentUser.$id),
           Query.equal("company_id", args._company),
@@ -851,7 +862,21 @@ export const authAdapter = {
           };
         }
       }
-      return { data: { session: { ...session, user: mappedUser } }, error: null };
+      const token =
+        (session as any)?.userId ||
+        (session as any)?.$id ||
+        (session as any)?.secret ||
+        "appwrite-session";
+      return {
+        data: {
+          session: {
+            ...session,
+            user: mappedUser,
+            access_token: token,
+          },
+        },
+        error: null,
+      };
     } catch (err: any) {
       return { data: { session: null }, error: null };
     }

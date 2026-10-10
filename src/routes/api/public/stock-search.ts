@@ -1,14 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { createClient } from "@supabase/supabase-js";
-import type { Database } from "@/integrations/supabase/types";
 import { z } from "zod";
 
-const SUPABASE_URL = "https://oapfhdcvugcileuxumpb.supabase.co";
-const SUPABASE_PUBLISHABLE_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9hcGZoZGN2dWdjaWxldXh1bXBiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3OTkxNDQsImV4cCI6MjA5MjM3NTE0NH0.I5EbNf4Rkr2XqKTjUUd720sP5V59wr1Xsgr8FMZy5WQ";
-
 const Query = z.object({
-  company_id: z.string().uuid(),
+  company_id: z.string().min(1).max(100),
   q: z.string().min(1).max(100),
 });
 
@@ -25,17 +19,35 @@ export const Route = createFileRoute("/api/public/stock-search")({
           return Response.json({ items: [] }, { status: 400 });
         }
         try {
-          const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
-          const { data, error } = await supabase.rpc("public_stock_search" as any, {
-            _company: parsed.data.company_id,
-            _term: parsed.data.q,
-          });
+          const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+          const term = parsed.data.q.toLowerCase().trim();
+
+          const { data: prods, error } = await supabaseAdmin
+            .from("products")
+            .select("id, name, sku, barcode, stock, price, sale_price, image_url, brand, category_id, is_active")
+            .eq("company_id", parsed.data.company_id);
+
           if (error) {
             console.error("public_stock_search error:", error);
-            return Response.json({ items: [], error: error.message });
+            return Response.json({ items: [], error: (error as any).message });
           }
+
+          const filtered = (prods || []).filter((p: any) => {
+            if (p.is_active === false) return false;
+            const name = (p.name || "").toLowerCase();
+            const sku = (p.sku || "").toLowerCase();
+            const barcode = (p.barcode || "").toLowerCase();
+            const brand = (p.brand || "").toLowerCase();
+            return (
+              name.includes(term) ||
+              sku.includes(term) ||
+              barcode.includes(term) ||
+              brand.includes(term)
+            );
+          });
+
           return Response.json({
-            items: ((data as any[]) ?? []).map((item) => ({
+            items: filtered.slice(0, 50).map((item: any) => ({
               ...item,
               image_url: item.image_url || null,
             })),

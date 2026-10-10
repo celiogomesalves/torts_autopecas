@@ -6,7 +6,7 @@ type LookupResult = {
   ncm?: string;
   description?: string;
   reason?: string;
-  source?: "company" | "lovable";
+  source?: "company" | "ai" | "lovable";
 };
 
 const PROMPT = (categoryName: string) => `Você é um especialista em classificação fiscal brasileira (NCM/SH).
@@ -177,39 +177,52 @@ export const lookupNcmByCategory = createServerFn({ method: "POST" })
               data.categoryName,
             );
           } else if (model.startsWith("google/")) {
-            // Token do cliente passando pelo Lovable Gateway
+            const googleKey = token;
+            const modelName = model.replace(/^google\//, "") || "gemini-1.5-flash";
             result = await callChatCompletion(
               {
-                url: "https://ai.gateway.lovable.dev/v1/chat/completions",
-                authHeader: `Bearer ${token}`,
-                modelId: model,
+                url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                authHeader: `Bearer ${googleKey}`,
+                modelId: modelName,
               },
               data.categoryName,
             );
           }
 
           if (result) return { ...result, source: "company" };
-          // Modelos de transcrição não servem para NCM → cai no fallback
         }
       }
     }
 
-    // 2) Fallback: IA interna (Lovable)
-    const apiKey = process.env.LOVABLE_API_KEY;
+    // 2) Fallback: Provedor de IA configurado no ambiente
+    const apiKey =
+      process.env.OPENAI_API_KEY ||
+      process.env.GEMINI_API_KEY ||
+      process.env.LOVABLE_API_KEY;
+
     if (!apiKey) {
       return {
         found: false,
         reason:
-          "Nenhuma integração de IA ativa e IA interna indisponível. Habilite e teste a IA em Configurações.",
+          "Nenhuma integração de IA ativa e nenhuma chave de API configurada. Habilite e teste a IA em Configurações > Integrações.",
       };
     }
+
+    const isGemini = Boolean(process.env.GEMINI_API_KEY);
+    const endpoint = isGemini
+      ? "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+      : process.env.OPENAI_API_KEY
+        ? "https://api.openai.com/v1/chat/completions"
+        : "https://ai.gateway.lovable.dev/v1/chat/completions";
+    const modelId = isGemini ? "gemini-1.5-flash" : "gpt-4o-mini";
+
     const r = await callChatCompletion(
       {
-        url: "https://ai.gateway.lovable.dev/v1/chat/completions",
+        url: endpoint,
         authHeader: `Bearer ${apiKey}`,
-        modelId: "google/gemini-3-flash-preview",
+        modelId,
       },
       data.categoryName,
     );
-    return { ...r, source: "lovable" };
+    return { ...r, source: "ai" };
   });

@@ -1,11 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
-import { createClient } from "@supabase/supabase-js";
-import type { Database } from "@/integrations/supabase/types";
-
-const SUPABASE_URL = "https://oapfhdcvugcileuxumpb.supabase.co";
-const SUPABASE_PUBLISHABLE_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9hcGZoZGN2dWdjaWxldXh1bXBiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3OTkxNDQsImV4cCI6MjA5MjM3NTE0NH0.I5EbNf4Rkr2XqKTjUUd720sP5V59wr1Xsgr8FMZy5WQ";
 
 function getClientIp(request: Request): string | null {
   const xff = request.headers.get("x-forwarded-for");
@@ -14,8 +8,8 @@ function getClientIp(request: Request): string | null {
 }
 
 const Body = z.object({
-  company_id: z.string().uuid(),
-  access_token: z.string().min(10).max(4000),
+  company_id: z.string().min(1).max(100),
+  access_token: z.string().min(1).max(4000),
 });
 
 export const Route = createFileRoute("/api/public/register-network-access")({
@@ -32,32 +26,32 @@ export const Route = createFileRoute("/api/public/register-network-access")({
         const ip = getClientIp(request);
         const ua = request.headers.get("user-agent") ?? null;
 
-        // Cria cliente autenticado com o token do usuário para segurança
-        const supabaseUser = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
-          auth: { persistSession: false },
-          global: {
-            headers: {
-              Authorization: `Bearer ${parsed.access_token}`,
-            },
-          },
-        });
+        try {
+          const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
-        // Chama a função SECURITY DEFINER que valida membership e registra o acesso
-        const { error } = await supabaseUser.rpc("register_network_access", {
-          _company: parsed.company_id,
-          _ip: ip ?? "",
-          _ua: ua ?? "",
-        });
+          const { error } = await supabaseAdmin.from("company_network_access").upsert({
+            company_id: parsed.company_id,
+            ip_address: ip ?? "127.0.0.1",
+            user_agent: ua ?? "",
+            last_seen_at: new Date().toISOString(),
+          });
 
-        if (error) {
-          console.error("register_network_access error:", error);
-          return new Response(JSON.stringify({ error: error.message }), {
-            status: 400,
+          if (error) {
+            console.error("register_network_access error:", error);
+            return new Response(JSON.stringify({ error: (error as any).message }), {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+
+          return Response.json({ ok: true });
+        } catch (err: any) {
+          console.error("register-network-access server error:", err);
+          return new Response(JSON.stringify({ error: err.message || "Erro no servidor" }), {
+            status: 500,
             headers: { "Content-Type": "application/json" },
           });
         }
-
-        return Response.json({ ok: true });
       },
     },
   },

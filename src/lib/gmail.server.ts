@@ -20,14 +20,10 @@ function requireEnv(name: string): string {
   return v;
 }
 
-/** Client admin (Appwrite adapter como padrão / fallback). */
-export async function getEmailAdmin(): Promise<SupabaseClient<any, any, any>> {
-  if (process.env.DRIVE_SUPABASE_URL && process.env.DRIVE_SUPABASE_SERVICE_ROLE_KEY) {
-    const { getDriveSupabaseAdmin } = await import("./drive-supabase.server");
-    return getDriveSupabaseAdmin() as unknown as SupabaseClient<any, any, any>;
-  }
+/** Client admin (Appwrite adapter). */
+export async function getEmailAdmin(): Promise<any> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  return supabaseAdmin as unknown as SupabaseClient<any, any, any>;
+  return supabaseAdmin;
 }
 
 // ─── OAuth ───────────────────────────────────────────────────────────────
