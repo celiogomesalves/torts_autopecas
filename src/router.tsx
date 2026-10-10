@@ -13,13 +13,18 @@ function isChunkLoadError(error: Error) {
   );
 }
 
+if (typeof window !== "undefined") {
+  window.addEventListener("vite:preloadError", () => {
+    window.location.reload();
+  });
+}
+
 function DefaultErrorComponent(props: import("@tanstack/react-router").ErrorComponentProps) {
   const error = props.error as Error;
-  const reset = props.reset;
-  const router = useRouter();
+  const isChunk = isChunkLoadError(error);
 
-  // Auto-reload uma única vez em erro de chunk (típico após deploy novo)
-  if (typeof window !== "undefined" && isChunkLoadError(error)) {
+  // Auto-reload em erro de chunk (típico logo após deploy novo na Vercel)
+  if (typeof window !== "undefined" && isChunk) {
     try {
       const already = sessionStorage.getItem(CHUNK_RELOAD_KEY);
       if (!already) {
@@ -28,7 +33,7 @@ function DefaultErrorComponent(props: import("@tanstack/react-router").ErrorComp
         return null;
       }
     } catch {
-      // sessionStorage indisponível — segue exibindo a tela de erro
+      // sessionStorage indisponível
     }
   }
 
@@ -45,15 +50,21 @@ function DefaultErrorComponent(props: import("@tanstack/react-router").ErrorComp
               } catch {
                 /* ignore */
               }
-              router.invalidate();
-              reset();
+              window.location.reload();
             }}
-            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            className="inline-flex items-center justify-center rounded-md bg-brand-red px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-red/90"
           >
             Tentar novamente
           </button>
           <a
             href="/"
+            onClick={() => {
+              try {
+                sessionStorage.removeItem(CHUNK_RELOAD_KEY);
+              } catch {
+                /* ignore */
+              }
+            }}
             className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
           >
             Início
