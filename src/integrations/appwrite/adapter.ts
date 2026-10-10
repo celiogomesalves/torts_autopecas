@@ -301,72 +301,73 @@ export class AppwriteQueryBuilder<T = any> {
   }
 
   // Inserção
-  async insert(recordOrRecords: any | any[]) {
-    try {
-      const records = Array.isArray(recordOrRecords) ? recordOrRecords : [recordOrRecords];
-      const results: any[] = [];
+  insert(recordOrRecords: any | any[]) {
+    const execute = async () => {
+      try {
+        const records = Array.isArray(recordOrRecords) ? recordOrRecords : [recordOrRecords];
+        const results: any[] = [];
 
-      for (const raw of records) {
-        const docId = raw.id || ID.unique();
-        const data = { ...raw };
-        delete data.$id;
-        delete data.$createdAt;
-        delete data.$updatedAt;
-        delete data.$permissions;
-        delete data.$databaseId;
-        delete data.$collectionId;
-
-        // Serializar objetos/arrays que não sejam strings
-        for (const [k, v] of Object.entries(data)) {
-          if (v && typeof v === "object" && !(v instanceof Date)) {
-            data[k] = JSON.stringify(v);
-          }
-        }
-
-        const created = await databases.createDocument(
-          APPWRITE_DATABASE_ID,
-          this.collectionId,
-          docId,
-          data,
-        );
-        results.push(normalizeDoc(created));
-      }
-
-      return {
-        data: Array.isArray(recordOrRecords) ? results : results[0],
-        error: null,
-      };
-    } catch (err: any) {
-      return { data: null, error: err };
-    }
-  }
-
-  // Atualização
-  async update(patch: any) {
-    const self = this;
-    return {
-      eq: async (col: string, val: any) => {
-        try {
-          const targetCol = col === "id" ? "$id" : col;
-          let docId = val;
-
-          if (targetCol !== "$id") {
-            const list = await databases.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
-              Query.equal(targetCol, val),
-              Query.limit(1),
-            ]);
-            if (list.documents.length === 0) {
-              return { data: null, error: new Error("Documento não encontrado para atualização") };
-            }
-            docId = list.documents[0].$id;
-          }
-
-          const data = { ...patch };
+        for (const raw of records) {
+          const docId = raw.id || ID.unique();
+          const data = { ...raw };
           delete data.$id;
-          delete data.id;
           delete data.$createdAt;
           delete data.$updatedAt;
           delete data.$permissions;
+          delete data.$databaseId;
+          delete data.$collectionId;
+
+          // Serializar objetos/arrays que não sejam strings
+          for (const [k, v] of Object.entries(data)) {
+            if (v && typeof v === "object" && !(v instanceof Date)) {
+              data[k] = JSON.stringify(v);
+            }
+          }
+
+          const created = await databases.createDocument(
+            APPWRITE_DATABASE_ID,
+            this.collectionId,
+            docId,
+            data,
+          );
+          results.push(normalizeDoc(created));
+        }
+
+        return {
+          data: Array.isArray(recordOrRecords) ? results : results[0],
+          error: null,
+        };
+      } catch (err: any) {
+        return { data: null, error: err };
+      }
+    };
+
+    const promise = execute();
+    return Object.assign(promise, {
+      select: (_cols = "*") => ({
+        single: () => promise,
+        maybeSingle: () => promise,
+        then: (onfulfilled?: any, onrejected?: any) => promise.then(onfulfilled, onrejected),
+      }),
+    });
+  }
+
+  // Upsert (atualiza se existir ou insere se não existir)
+  upsert(recordOrRecords: any | any[], _options?: any) {
+    const self = this;
+    const execute = async () => {
+      try {
+        const records = Array.isArray(recordOrRecords) ? recordOrRecords : [recordOrRecords];
+        const results: any[] = [];
+
+        for (const raw of records) {
+          const data = { ...raw };
+          delete data.$id;
+          delete data.$createdAt;
+          delete data.$updatedAt;
+          delete data.$permissions;
+          delete data.$databaseId;
+          delete data.$collectionId;
 
           for (const [k, v] of Object.entries(data)) {
             if (v && typeof v === "object" && !(v instanceof Date)) {
@@ -374,45 +375,162 @@ export class AppwriteQueryBuilder<T = any> {
             }
           }
 
-          const updated = await databases.updateDocument(
-            APPWRITE_DATABASE_ID,
-            self.collectionId,
-            docId,
-            data,
-          );
-          return { data: normalizeDoc(updated), error: null };
-        } catch (err: any) {
-          return { data: null, error: err };
+          let existingDocId: string | null = null;
+          if (raw.id) {
+            try {
+              const doc = await databases.getDocument(APPWRITE_DATABASE_ID, self.collectionId, raw.id);
+              if (doc) existingDocId = doc.$id;
+            } catch {
+              // Documento novo
+            }
+          } else if (raw.company_id) {
+            try {
+              const list = await databases.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
+                Query.equal("company_id", raw.company_id),
+                Query.limit(1),
+              ]);
+              if (list.documents.length > 0) existingDocId = list.documents[0].$id;
+            } catch {
+              // Ignora
+            }
+          }
+
+          if (existingDocId) {
+            delete data.id;
+            const updated = await databases.updateDocument(
+              APPWRITE_DATABASE_ID,
+              self.collectionId,
+              existingDocId,
+              data,
+            );
+            results.push(normalizeDoc(updated));
+          } else {
+            const docId = raw.id || ID.unique();
+            const created = await databases.createDocument(
+              APPWRITE_DATABASE_ID,
+              self.collectionId,
+              docId,
+              data,
+            );
+            results.push(normalizeDoc(created));
+          }
         }
+
+        return {
+          data: Array.isArray(recordOrRecords) ? results : results[0],
+          error: null,
+        };
+      } catch (err: any) {
+        return { data: null, error: err };
+      }
+    };
+
+    const promise = execute();
+    return Object.assign(promise, {
+      select: (_cols = "*") => ({
+        single: () => promise,
+        maybeSingle: () => promise,
+        then: (onfulfilled?: any, onrejected?: any) => promise.then(onfulfilled, onrejected),
+      }),
+    });
+  }
+
+  // Atualização
+  update(patch: any) {
+    const self = this;
+    return {
+      eq: (col: string, val: any) => {
+        const execute = async () => {
+          try {
+            const targetCol = col === "id" ? "$id" : col;
+            let docId = val;
+
+            if (targetCol !== "$id") {
+              const list = await databases.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
+                Query.equal(targetCol, val),
+                Query.limit(1),
+              ]);
+              if (list.documents.length === 0) {
+                return { data: null, error: new Error("Documento não encontrado para atualização") };
+              }
+              docId = list.documents[0].$id;
+            }
+
+            const data = { ...patch };
+            delete data.$id;
+            delete data.id;
+            delete data.$createdAt;
+            delete data.$updatedAt;
+            delete data.$permissions;
+            delete data.$databaseId;
+            delete data.$collectionId;
+
+            for (const [k, v] of Object.entries(data)) {
+              if (v && typeof v === "object" && !(v instanceof Date)) {
+                data[k] = JSON.stringify(v);
+              }
+            }
+
+            const updated = await databases.updateDocument(
+              APPWRITE_DATABASE_ID,
+              self.collectionId,
+              docId,
+              data,
+            );
+            return { data: normalizeDoc(updated), error: null };
+          } catch (err: any) {
+            return { data: null, error: err };
+          }
+        };
+
+        const promise = execute();
+        return Object.assign(promise, {
+          select: (_cols = "*") => ({
+            single: () => promise,
+            maybeSingle: () => promise,
+            then: (onfulfilled?: any, onrejected?: any) => promise.then(onfulfilled, onrejected),
+          }),
+        });
       },
     };
   }
 
   // Deleção
-  async delete() {
+  delete() {
     const self = this;
     return {
-      eq: async (col: string, val: any) => {
-        try {
-          const targetCol = col === "id" ? "$id" : col;
-          let docId = val;
+      eq: (col: string, val: any) => {
+        const execute = async () => {
+          try {
+            const targetCol = col === "id" ? "$id" : col;
+            let docId = val;
 
-          if (targetCol !== "$id") {
-            const list = await databases.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
-              Query.equal(targetCol, val),
-              Query.limit(1),
-            ]);
-            if (list.documents.length === 0) {
-              return { data: null, error: null };
+            if (targetCol !== "$id") {
+              const list = await databases.listDocuments(APPWRITE_DATABASE_ID, self.collectionId, [
+                Query.equal(targetCol, val),
+                Query.limit(1),
+              ]);
+              if (list.documents.length === 0) {
+                return { data: null, error: null };
+              }
+              docId = list.documents[0].$id;
             }
-            docId = list.documents[0].$id;
-          }
 
-          await databases.deleteDocument(APPWRITE_DATABASE_ID, self.collectionId, docId);
-          return { data: true, error: null };
-        } catch (err: any) {
-          return { data: null, error: err };
-        }
+            await databases.deleteDocument(APPWRITE_DATABASE_ID, self.collectionId, docId);
+            return { data: true, error: null };
+          } catch (err: any) {
+            return { data: null, error: err };
+          }
+        };
+
+        const promise = execute();
+        return Object.assign(promise, {
+          select: (_cols = "*") => ({
+            single: () => promise,
+            maybeSingle: () => promise,
+            then: (onfulfilled?: any, onrejected?: any) => promise.then(onfulfilled, onrejected),
+          }),
+        });
       },
     };
   }
@@ -750,6 +868,26 @@ export const authAdapter = {
       return { data: { user: mappedUser }, error: null };
     } catch (err: any) {
       return { data: { user: null }, error: null };
+    }
+  },
+
+  updateUser: async (attributes: any) => {
+    try {
+      if (attributes?.password) {
+        await account.updatePassword(attributes.password);
+      }
+      if (attributes?.data?.name || attributes?.data?.full_name) {
+        await account.updateName(attributes.data.name || attributes.data.full_name);
+      }
+      const user = await account.get();
+      const mappedUser = {
+        ...user,
+        id: user.$id,
+        user_metadata: { name: user.name, full_name: user.name },
+      };
+      return { data: { user: mappedUser }, error: null };
+    } catch (err: any) {
+      return { data: { user: null }, error: err };
     }
   },
 

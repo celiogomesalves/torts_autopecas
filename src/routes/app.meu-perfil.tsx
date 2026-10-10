@@ -122,14 +122,19 @@ function MyProfilePage() {
       return;
     }
     setSavingProfile(true);
-    const { error } = await (supabase.from("profiles") as any)
-      .update({ name: name.trim(), phone: phone.trim() || null, address: address.trim() || null })
-      .eq("id", user.id);
-    setSavingProfile(false);
-    if (error) {
-      toast.error("Erro ao salvar", { description: error.message });
-    } else {
-      toast.success("Perfil atualizado");
+    try {
+      const { error } = await (supabase.from("profiles") as any)
+        .update({ name: name.trim(), phone: phone.trim() || null, address: address.trim() || null })
+        .eq("id", user.id);
+      if (error) {
+        toast.error("Erro ao salvar", { description: error.message });
+      } else {
+        toast.success("Perfil atualizado");
+      }
+    } catch (err: any) {
+      toast.error("Erro ao salvar perfil", { description: err.message });
+    } finally {
+      setSavingProfile(false);
     }
   };
 
@@ -144,14 +149,19 @@ function MyProfilePage() {
       return;
     }
     setSavingPassword(true);
-    const { error } = await supabase.auth.updateUser({ password: pw1 });
-    setSavingPassword(false);
-    if (error) {
-      toast.error("Erro ao alterar senha", { description: error.message });
-    } else {
-      setPw1("");
-      setPw2("");
-      toast.success("Senha alterada com sucesso");
+    try {
+      const { error } = await supabase.auth.updateUser({ password: pw1 });
+      if (error) {
+        toast.error("Erro ao alterar senha", { description: error.message });
+      } else {
+        setPw1("");
+        setPw2("");
+        toast.success("Senha alterada com sucesso");
+      }
+    } catch (err: any) {
+      toast.error("Erro ao alterar senha", { description: err.message });
+    } finally {
+      setSavingPassword(false);
     }
   };
 
