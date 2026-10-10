@@ -30,13 +30,12 @@ export const Route = createFileRoute("/api/public/gmail/callback")({
         if (!verified) return done("error", "State inválido ou expirado");
 
         try {
-          // Always use the canonical custom-domain redirect URI so it matches
-          // what was sent to Google in the auth URL (only localhost dev varies).
-          const redirectUri =
-            url.hostname === "localhost"
-              ? `${url.origin}/api/public/gmail/callback`
-              : `https://tortsautopecas.agenc-ia.net/api/public/gmail/callback`;
-          const tokens = await exchangeGmailCode({ code, redirectUri });
+          const redirectUri = `${url.origin}/api/public/gmail/callback`;
+          const tokens = await exchangeGmailCode({
+            code,
+            redirectUri,
+            companyId: verified.companyId,
+          });
           if (!tokens.refresh_token) {
             return done(
               "error",

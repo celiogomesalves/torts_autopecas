@@ -74,7 +74,7 @@ async function getValidAccessToken(companyId: string): Promise<{
   let accessToken = settings.access_token as string | null;
 
   if (!accessToken || Date.now() > expiresAt - 60_000) {
-    const refreshed = await refreshAccessToken(settings.refresh_token);
+    const refreshed = await refreshAccessToken(settings.refresh_token, companyId);
     accessToken = refreshed.access_token;
     await supabaseAdmin
       .from("company_drive_settings")

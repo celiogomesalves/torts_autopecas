@@ -33,15 +33,47 @@ function requireEnv(name: string): string {
   return v;
 }
 
-export function getOAuthClient() {
-  return {
-    clientId: requireEnv("GOOGLE_OAUTH_CLIENT_ID"),
-    clientSecret: requireEnv("GOOGLE_OAUTH_CLIENT_SECRET"),
-  };
+export async function getOAuthClient(companyId?: string | null): Promise<{
+  clientId: string;
+  clientSecret: string;
+}> {
+  let clientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim();
+  let clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim();
+
+  // Se não estiver no ambiente e tivermos companyId, busca nas configurações do banco
+  if ((!clientId || !clientSecret) && companyId) {
+    try {
+      const { getDriveSupabaseAdmin } = await import("./drive-supabase.server");
+      const admin = getDriveSupabaseAdmin();
+      const { data } = await admin
+        .from("company_drive_settings")
+        .select("google_client_id, google_client_secret" as any)
+        .eq("company_id", companyId)
+        .maybeSingle();
+
+      const row = data as any;
+      if (row?.google_client_id?.trim()) clientId = row.google_client_id.trim();
+      if (row?.google_client_secret?.trim()) clientSecret = row.google_client_secret.trim();
+    } catch (err) {
+      console.warn("[google-drive.server] Falha ao ler credenciais do banco:", err);
+    }
+  }
+
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      "Credenciais Google OAuth não encontradas. Configure o Google Client ID e Client Secret nas Configurações da Empresa ou defina GOOGLE_OAUTH_CLIENT_ID e GOOGLE_OAUTH_CLIENT_SECRET.",
+    );
+  }
+
+  return { clientId, clientSecret };
 }
 
-export function buildAuthUrl(opts: { redirectUri: string; state: string }) {
-  const { clientId } = getOAuthClient();
+export async function buildAuthUrl(opts: {
+  redirectUri: string;
+  state: string;
+  companyId?: string | null;
+}) {
+  const { clientId } = await getOAuthClient(opts.companyId);
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: opts.redirectUri,
@@ -58,8 +90,9 @@ export function buildAuthUrl(opts: { redirectUri: string; state: string }) {
 export async function exchangeCodeForTokens(opts: {
   code: string;
   redirectUri: string;
+  companyId?: string | null;
 }): Promise<GoogleTokens> {
-  const { clientId, clientSecret } = getOAuthClient();
+  const { clientId, clientSecret } = await getOAuthClient(opts.companyId);
   const body = new URLSearchParams({
     code: opts.code,
     client_id: clientId,
@@ -79,8 +112,11 @@ export async function exchangeCodeForTokens(opts: {
   return (await res.json()) as GoogleTokens;
 }
 
-export async function refreshAccessToken(refreshToken: string): Promise<GoogleTokens> {
-  const { clientId, clientSecret } = getOAuthClient();
+export async function refreshAccessToken(
+  refreshToken: string,
+  companyId?: string | null,
+): Promise<GoogleTokens> {
+  const { clientId, clientSecret } = await getOAuthClient(companyId);
   const body = new URLSearchParams({
     refresh_token: refreshToken,
     client_id: clientId,
@@ -243,7 +279,9 @@ function b64url(buf: ArrayBuffer | Uint8Array): string {
 }
 
 async function hmac(payload: string): Promise<string> {
-  const secret = requireEnv("GOOGLE_OAUTH_STATE_SECRET");
+  const secret =
+    process.env.GOOGLE_OAUTH_STATE_SECRET?.trim() ||
+    "torque-drive-state-secret-default-key-2026-safe-signature";
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),

@@ -9,8 +9,11 @@ function pickRedirectUri(origin?: string | null): string {
       const u = new URL(origin);
       const isAllowedHost =
         u.hostname === "localhost" ||
+        u.hostname.endsWith(".vercel.app") ||
         u.hostname.endsWith(".lovable.app") ||
-        u.hostname.endsWith(".lovableproject.com");
+        u.hostname.endsWith(".lovableproject.com") ||
+        u.hostname.endsWith(".agenc-ia.net") ||
+        u.hostname === "torts-autopecas.vercel.app";
       if ((u.protocol === "https:" || u.hostname === "localhost") && isAllowedHost) {
         return `${u.origin}${CALLBACK_PATH}`;
       }
@@ -18,7 +21,7 @@ function pickRedirectUri(origin?: string | null): string {
       // fallback abaixo
     }
   }
-  return `https://project--54df0fe6-5eb6-44d7-8103-7686e7f4ca70.lovable.app${CALLBACK_PATH}`;
+  return `https://torts-autopecas.vercel.app${CALLBACK_PATH}`;
 }
 
 async function assertCanManage(supabase: any, companyId: string) {
@@ -43,10 +46,14 @@ export const getDriveStatus = createServerFn({ method: "POST" })
     const { data: row } = await context.supabase
       .from("company_drive_settings")
       .select(
-        "enabled, google_email, root_folder_name, root_folder_id, connected_at, updated_at, daily_check_enabled, daily_check_hour" as never,
+        "enabled, google_email, root_folder_name, root_folder_id, connected_at, updated_at, daily_check_enabled, daily_check_hour, google_client_id, google_client_secret" as never,
       )
       .eq("company_id", data.companyId)
       .maybeSingle();
+
+    const hasEnvClientId = !!process.env.GOOGLE_OAUTH_CLIENT_ID;
+    const hasEnvClientSecret = !!process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+
     if (!row) {
       return {
         connected: false,
@@ -57,9 +64,15 @@ export const getDriveStatus = createServerFn({ method: "POST" })
         connectedAt: null,
         dailyCheckEnabled: true,
         dailyCheckHour: 23,
+        googleClientId: hasEnvClientId ? "Configurado no Servidor (.env)" : "",
+        hasGoogleCredentials: hasEnvClientId && hasEnvClientSecret,
+        isConfiguredViaEnv: hasEnvClientId && hasEnvClientSecret,
       };
     }
     const r = row as any;
+    const dbClientId = r.google_client_id ? String(r.google_client_id) : "";
+    const hasDbClientSecret = !!r.google_client_secret;
+
     return {
       connected: !!r.root_folder_id,
       enabled: r.enabled,
@@ -69,6 +82,9 @@ export const getDriveStatus = createServerFn({ method: "POST" })
       connectedAt: r.connected_at,
       dailyCheckEnabled: r.daily_check_enabled ?? true,
       dailyCheckHour: r.daily_check_hour ?? 23,
+      googleClientId: dbClientId || (hasEnvClientId ? "Configurado no Servidor (.env)" : ""),
+      hasGoogleCredentials: (!!dbClientId && hasDbClientSecret) || (hasEnvClientId && hasEnvClientSecret),
+      isConfiguredViaEnv: hasEnvClientId && hasEnvClientSecret,
     };
   });
 
@@ -81,7 +97,8 @@ export const getDriveAuthUrl = createServerFn({ method: "POST" })
     const { buildAuthUrl, signState } = await import("./google-drive.server");
     const redirectUri = pickRedirectUri(data.origin);
     const state = await signState(data.companyId);
-    return { url: buildAuthUrl({ redirectUri, state }), redirectUri };
+    const url = await buildAuthUrl({ redirectUri, state, companyId: data.companyId });
+    return { url, redirectUri };
   });
 
 // ─── updateDriveSettings ─────────────────────────────────────────────────
@@ -94,6 +111,8 @@ export const updateDriveSettings = createServerFn({ method: "POST" })
       rootFolderName?: string;
       dailyCheckEnabled?: boolean;
       dailyCheckHour?: number;
+      googleClientId?: string;
+      googleClientSecret?: string;
     }) => d,
   )
   .handler(async ({ data, context }) => {
@@ -109,6 +128,12 @@ export const updateDriveSettings = createServerFn({ method: "POST" })
     if (typeof data.dailyCheckHour === "number") {
       const h = Math.max(0, Math.min(23, Math.floor(data.dailyCheckHour)));
       patch.daily_check_hour = h;
+    }
+    if (typeof data.googleClientId === "string") {
+      patch.google_client_id = data.googleClientId.trim();
+    }
+    if (typeof data.googleClientSecret === "string" && data.googleClientSecret.trim()) {
+      patch.google_client_secret = data.googleClientSecret.trim();
     }
     const { error } = await context.supabase
       .from("company_drive_settings")

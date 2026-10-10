@@ -37,7 +37,11 @@ export const Route = createFileRoute("/api/public/google-drive/callback")({
 
         try {
           const redirectUri = `${url.origin}/api/public/google-drive/callback`;
-          const tokens = await exchangeCodeForTokens({ code, redirectUri });
+          const tokens = await exchangeCodeForTokens({
+            code,
+            redirectUri,
+            companyId: verified.companyId,
+          });
           if (!tokens.refresh_token) {
             return redirectFinal(
               "error",

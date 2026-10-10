@@ -475,6 +475,8 @@ export type Database = {
           daily_check_enabled: boolean
           daily_check_hour: number
           enabled: boolean
+          google_client_id: string | null
+          google_client_secret: string | null
           google_email: string | null
           refresh_token: string | null
           root_folder_id: string | null
@@ -490,6 +492,8 @@ export type Database = {
           daily_check_enabled?: boolean
           daily_check_hour?: number
           enabled?: boolean
+          google_client_id?: string | null
+          google_client_secret?: string | null
           google_email?: string | null
           refresh_token?: string | null
           root_folder_id?: string | null
@@ -505,6 +509,8 @@ export type Database = {
           daily_check_enabled?: boolean
           daily_check_hour?: number
           enabled?: boolean
+          google_client_id?: string | null
+          google_client_secret?: string | null
           google_email?: string | null
           refresh_token?: string | null
           root_folder_id?: string | null

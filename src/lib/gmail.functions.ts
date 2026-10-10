@@ -7,14 +7,20 @@ function pickRedirectUri(origin?: string | null): string {
   if (origin) {
     try {
       const u = new URL(origin);
-      if (u.hostname === "localhost") {
+      if (
+        u.hostname === "localhost" ||
+        u.hostname.endsWith(".vercel.app") ||
+        u.hostname.endsWith(".lovable.app") ||
+        u.hostname.endsWith(".agenc-ia.net") ||
+        u.hostname === "torts-autopecas.vercel.app"
+      ) {
         return `${u.origin}${CALLBACK_PATH}`;
       }
     } catch {
       /* fallback */
     }
   }
-  return `https://tortsautopecas.agenc-ia.net${CALLBACK_PATH}`;
+  return `https://torts-autopecas.vercel.app${CALLBACK_PATH}`;
 }
 
 async function assertCanManage(supabase: any, companyId: string) {
@@ -96,8 +102,12 @@ export const getEmailAuthUrl = createServerFn({ method: "POST" })
     await assertCanManage(context.supabase, data.companyId);
     const { buildGmailAuthUrl, signGmailState } = await import("./gmail.server");
     const redirectUri = pickRedirectUri(data.origin);
-    const state = await signGmailState(data.companyId);
-    return { url: buildGmailAuthUrl({ redirectUri, state }), redirectUri };
+    const url = await buildGmailAuthUrl({
+      redirectUri,
+      state,
+      companyId: data.companyId,
+    });
+    return { url, redirectUri };
   });
 
 // ─── Nome do remetente ───────────────────────────────────────────────────

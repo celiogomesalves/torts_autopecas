@@ -20,7 +20,7 @@ function requireEnv(name: string): string {
   return v;
 }
 
-/** Client admin (Supabase externo usa DRIVE_SUPABASE_*; fallback para SUPABASE_*). */
+/** Client admin (Appwrite adapter como padrão / fallback). */
 export async function getEmailAdmin(): Promise<SupabaseClient<any, any, any>> {
   if (process.env.DRIVE_SUPABASE_URL && process.env.DRIVE_SUPABASE_SERVICE_ROLE_KEY) {
     const { getDriveSupabaseAdmin } = await import("./drive-supabase.server");
@@ -31,9 +31,15 @@ export async function getEmailAdmin(): Promise<SupabaseClient<any, any, any>> {
 }
 
 // ─── OAuth ───────────────────────────────────────────────────────────────
-export function buildGmailAuthUrl(opts: { redirectUri: string; state: string }) {
+export async function buildGmailAuthUrl(opts: {
+  redirectUri: string;
+  state: string;
+  companyId?: string | null;
+}) {
+  const { getOAuthClient } = await import("./google-drive.server");
+  const { clientId } = await getOAuthClient(opts.companyId);
   const params = new URLSearchParams({
-    client_id: requireEnv("GOOGLE_OAUTH_CLIENT_ID"),
+    client_id: clientId,
     redirect_uri: opts.redirectUri,
     response_type: "code",
     access_type: "offline",
@@ -55,11 +61,14 @@ export type GoogleTokens = {
 export async function exchangeGmailCode(opts: {
   code: string;
   redirectUri: string;
+  companyId?: string | null;
 }): Promise<GoogleTokens> {
+  const { getOAuthClient } = await import("./google-drive.server");
+  const { clientId, clientSecret } = await getOAuthClient(opts.companyId);
   const body = new URLSearchParams({
     code: opts.code,
-    client_id: requireEnv("GOOGLE_OAUTH_CLIENT_ID"),
-    client_secret: requireEnv("GOOGLE_OAUTH_CLIENT_SECRET"),
+    client_id: clientId,
+    client_secret: clientSecret,
     redirect_uri: opts.redirectUri,
     grant_type: "authorization_code",
   });
@@ -100,10 +109,13 @@ export async function getCompanyAccessToken(companyId: string): Promise<{
     return { accessToken: r.access_token, senderEmail: r.google_email, senderName: r.sender_name };
   }
 
+  const { getOAuthClient } = await import("./google-drive.server");
+  const { clientId, clientSecret } = await getOAuthClient(companyId);
+
   const body = new URLSearchParams({
     refresh_token: r.refresh_token,
-    client_id: requireEnv("GOOGLE_OAUTH_CLIENT_ID"),
-    client_secret: requireEnv("GOOGLE_OAUTH_CLIENT_SECRET"),
+    client_id: clientId,
+    client_secret: clientSecret,
     grant_type: "refresh_token",
   });
   const res = await fetch(OAUTH_TOKEN, {
