@@ -5,6 +5,8 @@ import {
   Storage,
   Query,
   ID,
+  Permission,
+  Role,
   type Models,
 } from "appwrite";
 
@@ -34,6 +36,42 @@ export function normalizeDoc<T = any>(doc: any): T {
   if (!normalized.created_at && doc.$createdAt) normalized.created_at = doc.$createdAt;
   if (!normalized.updated_at && doc.$updatedAt) normalized.updated_at = doc.$updatedAt;
   return normalized as T;
+}
+
+// Helper para calcular permissões de Team e Coleção por company_id
+export function getDocumentPermissions(collectionId: string, companyId?: string | null): string[] {
+  const isPublic = [
+    "products",
+    "categories",
+    "brands",
+    "units",
+    "app_config",
+    "delivery_business_hours",
+    "delivery_fees_by_km",
+    "company_network_access",
+  ].includes(collectionId);
+
+  if (isPublic) {
+    return [
+      Permission.read(Role.any()),
+      companyId ? Permission.update(Role.team(companyId)) : Permission.update(Role.users()),
+      companyId ? Permission.delete(Role.team(companyId, "admin")) : Permission.delete(Role.users()),
+    ];
+  }
+
+  if (companyId) {
+    return [
+      Permission.read(Role.team(companyId)),
+      Permission.update(Role.team(companyId)),
+      Permission.delete(Role.team(companyId, "admin")),
+    ];
+  }
+
+  return [
+    Permission.read(Role.users()),
+    Permission.update(Role.users()),
+    Permission.delete(Role.users()),
+  ];
 }
 
 // Adaptador de Query Fluente para Appwrite Databases
@@ -338,11 +376,13 @@ export class AppwriteQueryBuilder<T = any> {
             }
           }
 
+          const perms = getDocumentPermissions(this.collectionId, data.company_id || raw.company_id);
           const created = await this.dbInstance.createDocument(
             APPWRITE_DATABASE_ID,
             this.collectionId,
             docId,
             data,
+            perms,
           );
           results.push(normalizeDoc(created));
         }
@@ -449,6 +489,8 @@ export class AppwriteQueryBuilder<T = any> {
             }
           }
 
+          const perms = getDocumentPermissions(self.collectionId, data.company_id || raw.company_id);
+
           if (existingDocId) {
             delete data.id;
             data.updated_at = new Date().toISOString();
@@ -457,6 +499,7 @@ export class AppwriteQueryBuilder<T = any> {
               self.collectionId,
               existingDocId,
               data,
+              perms,
             );
             results.push(normalizeDoc(updated));
           } else {
@@ -469,6 +512,7 @@ export class AppwriteQueryBuilder<T = any> {
               self.collectionId,
               docId,
               data,
+              perms,
             );
             results.push(normalizeDoc(created));
           }

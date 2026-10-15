@@ -164,12 +164,42 @@ async function syncTable(table: string) {
 
         const data = prepareDocumentData(row, attrsMap);
 
+        const isPublic = [
+          "products",
+          "categories",
+          "brands",
+          "units",
+          "app_config",
+          "delivery_business_hours",
+          "delivery_fees_by_km",
+          "company_network_access",
+        ].includes(table);
+
+        const permissions = isPublic
+          ? [
+              'read("any")',
+              row.company_id ? `update("team:${row.company_id}")` : 'update("users")',
+              row.company_id ? `delete("team:${row.company_id}/admin")` : 'delete("users")',
+            ]
+          : row.company_id
+            ? [
+                `read("team:${row.company_id}")`,
+                `update("team:${row.company_id}")`,
+                `delete("team:${row.company_id}/admin")`,
+              ]
+            : [
+                'read("users")',
+                'update("users")',
+                'delete("users")',
+              ];
+
         const postRes = await appwriteReq(
           `/databases/${databaseId}/collections/${table}/documents`,
           "POST",
           {
             documentId: docId,
             data: data,
+            permissions: permissions,
           },
         );
 
@@ -181,6 +211,7 @@ async function syncTable(table: string) {
             "PATCH",
             {
               data: data,
+              permissions: permissions,
             },
           );
           if (patchRes.status === 200) {

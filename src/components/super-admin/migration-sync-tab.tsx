@@ -22,59 +22,125 @@ interface SyncResult {
   error?: string;
 }
 
+const allTables = [
+  "companies",
+  "units",
+  "categories",
+  "brands",
+  "stock_locations",
+  "payment_methods",
+  "products",
+  "product_references",
+  "partners",
+  "memberships",
+  "profiles",
+  "cash_registers",
+  "sales",
+  "sale_items",
+  "sale_payments",
+  "cash_transactions",
+  "payables",
+  "stock_movements",
+  "fiscal_notes",
+  "fiscal_note_attempts",
+  "delivery_orders",
+];
+
+const fastTables = [
+  "products",
+  "sales",
+  "sale_items",
+  "sale_payments",
+  "cash_transactions",
+  "cash_registers",
+  "stock_movements",
+  "fiscal_notes",
+];
+
 export function MigrationSyncTab() {
   const [loading, setLoading] = useState(false);
+  const [currentTable, setCurrentTable] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [results, setResults] = useState<SyncResult[]>([]);
-  const [syncScope, setSyncScope] = useState<"all" | "fast">("all");
-
-  const fastTables = [
-    "products",
-    "sales",
-    "sale_items",
-    "sale_payments",
-    "cash_transactions",
-    "cash_registers",
-    "stock_movements",
-    "fiscal_notes",
-  ];
+  const [syncScope, setSyncScope] = useState<"all" | "fast">("fast");
 
   const handleSync = async () => {
     setLoading(true);
+    setResults([]);
+    const tablesToRun = syncScope === "fast" ? fastTables : allTables;
+    setProgress({ current: 0, total: tablesToRun.length });
+
     toast.info("Iniciando sincronização incremental com o Supabase...", {
-      description: "Operação segura em modo leitura. Nenhum dado do sistema original será alterado.",
+      description: `Processando ${tablesToRun.length} tabelas sequencialmente para garantir estabilidade.`,
     });
 
+    const accumulatedResults: SyncResult[] = [];
+    let hasAnyError = false;
+
     try {
-      const payload: any = {};
-      if (syncScope === "fast") {
-        payload.tables = fastTables;
+      for (let i = 0; i < tablesToRun.length; i++) {
+        const table = tablesToRun[i];
+        setCurrentTable(table);
+        setProgress({ current: i + 1, total: tablesToRun.length });
+
+        try {
+          const res = await fetch("/api/functions/sync-supabase", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tables: [table] }),
+          });
+
+          const text = await res.text();
+          let data: any;
+          try {
+            data = JSON.parse(text);
+          } catch {
+            throw new Error(text.slice(0, 100) || `Erro HTTP ${res.status}`);
+          }
+
+          if (!res.ok || !data.ok) {
+            throw new Error(data.error || "Falha na resposta do servidor");
+          }
+
+          if (Array.isArray(data.results) && data.results.length > 0) {
+            accumulatedResults.push(...data.results);
+          } else {
+            accumulatedResults.push({ table, supabaseRows: 0, created: 0, updated: 0 });
+          }
+        } catch (tableErr: any) {
+          hasAnyError = true;
+          accumulatedResults.push({
+            table,
+            supabaseRows: 0,
+            created: 0,
+            updated: 0,
+            error: tableErr.message,
+          });
+        }
+
+        setResults([...accumulatedResults]);
       }
 
-      const res = await fetch("/api/functions/sync-supabase", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        throw new Error(data.error || "Falha na sincronização");
-      }
-
-      setResults(data.results || []);
       setLastSync(new Date().toLocaleString("pt-BR"));
 
-      const totalNew = (data.results || []).reduce((acc: number, r: SyncResult) => acc + (r.created || 0), 0);
-      const totalUpdated = (data.results || []).reduce((acc: number, r: SyncResult) => acc + (r.updated || 0), 0);
+      const totalNew = accumulatedResults.reduce((acc, r) => acc + (r.created || 0), 0);
+      const totalUpdated = accumulatedResults.reduce((acc, r) => acc + (r.updated || 0), 0);
 
-      toast.success("Sincronização concluída com sucesso!", {
-        description: `${totalNew} novos registros criados e ${totalUpdated} atualizados.`,
-      });
+      if (hasAnyError) {
+        toast.warning("Sincronização finalizada com alguns avisos", {
+          description: `${totalNew} novos registros criados e ${totalUpdated} atualizados. Verifique a tabela de detalhes.`,
+        });
+      } else {
+        toast.success("Sincronização concluída com sucesso!", {
+          description: `${totalNew} novos registros criados e ${totalUpdated} atualizados.`,
+        });
+      }
     } catch (err: any) {
       toast.error("Erro na sincronização: " + err.message);
     } finally {
       setLoading(false);
+      setCurrentTable(null);
     }
   };
 
@@ -95,14 +161,43 @@ export function MigrationSyncTab() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center rounded-md border border-border p-1 bg-background text-xs">
+              <button
+                type="button"
+                onClick={() => setSyncScope("fast")}
+                disabled={loading}
+                className={`px-3 py-1 rounded text-xs transition-colors ${
+                  syncScope === "fast"
+                    ? "bg-brand-orange text-white font-medium"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Rápido (8 tabelas)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSyncScope("all")}
+                disabled={loading}
+                className={`px-3 py-1 rounded text-xs transition-colors ${
+                  syncScope === "all"
+                    ? "bg-brand-orange text-white font-medium"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Completo (21 tabelas)
+              </button>
+            </div>
+
             <Button
               onClick={handleSync}
               disabled={loading}
               className="bg-brand-orange hover:bg-brand-orange/90 text-white font-medium gap-2 shadow-sm"
             >
               <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />
-              {loading ? "Sincronizando..." : "Sincronizar Agora"}
+              {loading
+                ? `Sincronizando ${currentTable ? `(${currentTable} ${progress.current}/${progress.total})` : "..."}`
+                : "Sincronizar Agora"}
             </Button>
           </div>
         </div>
