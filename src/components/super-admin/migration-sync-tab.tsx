@@ -43,6 +43,10 @@ const allTables = [
   "stock_movements",
   "fiscal_notes",
   "fiscal_note_attempts",
+  "email_logs",
+  "fiscal_settings",
+  "company_email_settings",
+  "company_settings",
   "delivery_orders",
 ];
 
@@ -55,6 +59,7 @@ const fastTables = [
   "cash_registers",
   "stock_movements",
   "fiscal_notes",
+  "email_logs",
 ];
 
 export function MigrationSyncTab() {

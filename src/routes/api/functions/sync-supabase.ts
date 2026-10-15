@@ -35,6 +35,10 @@ const targetTables = [
   "stock_movements",
   "fiscal_notes",
   "fiscal_note_attempts",
+  "email_logs",
+  "fiscal_settings",
+  "company_email_settings",
+  "company_settings",
   "delivery_orders",
 ];
 
