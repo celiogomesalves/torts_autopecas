@@ -1016,6 +1016,37 @@ export const authAdapter = {
     }
   },
 
+  resetPasswordForEmail: async (email: string, options?: { redirectTo?: string }) => {
+    try {
+      const redirectUrl =
+        options?.redirectTo ||
+        (typeof window !== "undefined"
+          ? `${window.location.origin}/reset-password`
+          : "https://torts-autopecas.vercel.app/reset-password");
+      await account.createRecovery(email, redirectUrl);
+      return { data: {}, error: null };
+    } catch (err: any) {
+      return { data: null, error: err };
+    }
+  },
+
+  updateRecovery: async ({
+    userId,
+    secret,
+    password,
+  }: {
+    userId: string;
+    secret: string;
+    password: string;
+  }) => {
+    try {
+      await account.updateRecovery(userId, secret, password);
+      return { data: {}, error: null };
+    } catch (err: any) {
+      return { data: null, error: err };
+    }
+  },
+
   onAuthStateChange: (callback: (event: string, session: any) => void) => {
     authListeners.add(callback);
 

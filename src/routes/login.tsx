@@ -24,6 +24,8 @@ import {
   Info,
   ArrowRight,
   ImageIcon,
+  KeyRound,
+  Mail,
 } from "lucide-react";
 import { SmartPagination } from "@/components/smart-pagination";
 import { supabase } from "@/integrations/supabase/client";
@@ -143,6 +145,11 @@ function LoginPage() {
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
 
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotBusy, setForgotBusy] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
+
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -154,6 +161,26 @@ function LoginPage() {
     }
     toast.success("Bem-vindo de volta!");
     navigate({ to: "/empresas" });
+  };
+
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const target = forgotEmail.trim().toLowerCase();
+    if (!target) {
+      toast.error("Informe seu e-mail cadastrado.");
+      return;
+    }
+    setForgotBusy(true);
+    const { error } = await (supabase.auth as any).resetPasswordForEmail(target, {
+      redirectTo: `${window.location.origin}/reset-password`,
+    });
+    setForgotBusy(false);
+    if (error) {
+      toast.error(error.message || "Erro ao solicitar recuperação de senha.");
+      return;
+    }
+    setForgotSent(true);
+    toast.success("E-mail de recuperação enviado com sucesso!");
   };
 
   return (
@@ -390,7 +417,20 @@ function LoginPage() {
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="password">Senha</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="password">Senha</Label>
+              <button
+                type="button"
+                onClick={() => {
+                  setForgotEmail(email);
+                  setForgotSent(false);
+                  setForgotOpen(true);
+                }}
+                className="text-xs text-brand-orange hover:underline focus:outline-none transition-colors font-medium"
+              >
+                Esqueci minha senha
+              </button>
+            </div>
             <div className="relative">
               <Input
                 id="password"
@@ -413,7 +453,7 @@ function LoginPage() {
           <Button
             type="submit"
             disabled={busy}
-            className="w-full bg-brand-red hover:bg-brand-red/90 text-brand-red-foreground"
+            className="w-full bg-brand-red hover:bg-brand-red/90 text-brand-red-foreground font-semibold shadow-lg shadow-brand-red/20"
           >
             {busy ? "Entrando..." : "Entrar"}
           </Button>
@@ -424,6 +464,82 @@ function LoginPage() {
             </Link>
           </p>
         </form>
+
+        {/* Modal de Recuperação de Senha */}
+        <Dialog
+          open={forgotOpen}
+          onOpenChange={(open) => {
+            setForgotOpen(open);
+            if (!open) setForgotSent(false);
+          }}
+        >
+          <DialogContent className="max-w-md p-6">
+            <DialogHeader className="space-y-2">
+              <div className="size-11 rounded-xl bg-brand-red/10 border border-brand-red/20 flex items-center justify-center text-brand-red mb-1">
+                <KeyRound className="size-5" />
+              </div>
+              <DialogTitle className="text-xl font-bold">
+                Recuperação de Senha
+              </DialogTitle>
+              <DialogDescription className="text-sm text-muted-foreground leading-relaxed">
+                Digite o e-mail associado à sua conta da <strong>Tort´s Auto Peças</strong>. Enviaremos um link exclusivo e seguro para você criar uma nova senha.
+              </DialogDescription>
+            </DialogHeader>
+
+            {forgotSent ? (
+              <div className="space-y-4 py-2">
+                <div className="rounded-lg bg-green-500/10 border border-green-500/20 p-4 text-sm text-green-700 dark:text-green-300 space-y-1.5">
+                  <p className="font-semibold flex items-center gap-2">
+                    <Mail className="size-4 text-green-600" />
+                    E-mail enviado com sucesso!
+                  </p>
+                  <p className="text-xs opacity-90 leading-relaxed">
+                    Verifique a caixa de entrada (e a pasta de spam) de <strong>{forgotEmail}</strong> e clique no botão <em>"Criar Nova Senha"</em> para concluir a alteração.
+                  </p>
+                </div>
+                <Button
+                  className="w-full bg-brand-red hover:bg-brand-red/90 text-brand-red-foreground"
+                  onClick={() => {
+                    setForgotOpen(false);
+                    setForgotSent(false);
+                  }}
+                >
+                  Entendi
+                </Button>
+              </div>
+            ) : (
+              <form onSubmit={handleForgotSubmit} className="space-y-4 pt-1">
+                <div className="space-y-2">
+                  <Label htmlFor="forgot-email">E-mail Cadastrado</Label>
+                  <Input
+                    id="forgot-email"
+                    type="email"
+                    required
+                    value={forgotEmail}
+                    onChange={(e) => setForgotEmail(e.target.value.toLowerCase().trim())}
+                    placeholder="seuemail@empresa.com"
+                  />
+                </div>
+                <div className="flex gap-2 justify-end pt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setForgotOpen(false)}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    type="submit"
+                    disabled={forgotBusy}
+                    className="bg-brand-red hover:bg-brand-red/90 text-brand-red-foreground font-semibold"
+                  >
+                    {forgotBusy ? "Enviando..." : "Enviar link de recuperação"}
+                  </Button>
+                </div>
+              </form>
+            )}
+          </DialogContent>
+        </Dialog>
 
         {/* Modal de Detalhes do Produto */}
         <Dialog open={!!selectedProduct} onOpenChange={(open) => !open && setSelectedProduct(null)}>

@@ -15,6 +15,7 @@ import { Route as BloqueadoRouteImport } from './routes/bloqueado'
 import { Route as ConfiancaRouteImport } from './routes/confianca'
 import { Route as EmpresasRouteImport } from './routes/empresas'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SuperAdminRouteImport } from './routes/super-admin'
 import { Route as AppIndexRouteImport } from './routes/app.index'
@@ -89,6 +90,11 @@ const EmpresasRoute = EmpresasRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResetPasswordRoute = ResetPasswordRouteImport.update({
+  id: '/reset-password',
+  path: '/reset-password',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SignupRoute = SignupRouteImport.update({
@@ -333,6 +339,7 @@ export interface FileRoutesByFullPath {
   '/confianca': typeof ConfiancaRoute
   '/empresas': typeof EmpresasRoute
   '/login': typeof LoginRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/signup': typeof SignupRoute
   '/super-admin': typeof SuperAdminRoute
   '/app/agenda': typeof AppAgendaRoute
@@ -385,6 +392,7 @@ export interface FileRoutesByTo {
   '/confianca': typeof ConfiancaRoute
   '/empresas': typeof EmpresasRoute
   '/login': typeof LoginRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/signup': typeof SignupRoute
   '/super-admin': typeof SuperAdminRoute
   '/app/agenda': typeof AppAgendaRoute
@@ -439,6 +447,7 @@ export interface FileRoutesById {
   '/confianca': typeof ConfiancaRoute
   '/empresas': typeof EmpresasRoute
   '/login': typeof LoginRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/signup': typeof SignupRoute
   '/super-admin': typeof SuperAdminRoute
   '/app/agenda': typeof AppAgendaRoute
@@ -494,6 +503,7 @@ export interface FileRouteTypes {
     | '/confianca'
     | '/empresas'
     | '/login'
+    | '/reset-password'
     | '/signup'
     | '/super-admin'
     | '/app/agenda'
@@ -546,6 +556,7 @@ export interface FileRouteTypes {
     | '/confianca'
     | '/empresas'
     | '/login'
+    | '/reset-password'
     | '/signup'
     | '/super-admin'
     | '/app/agenda'
@@ -599,6 +610,7 @@ export interface FileRouteTypes {
     | '/confianca'
     | '/empresas'
     | '/login'
+    | '/reset-password'
     | '/signup'
     | '/super-admin'
     | '/app/agenda'
@@ -653,6 +665,7 @@ export interface RootRouteChildren {
   ConfiancaRoute: typeof ConfiancaRoute
   EmpresasRoute: typeof EmpresasRoute
   LoginRoute: typeof LoginRoute
+  ResetPasswordRoute: typeof ResetPasswordRoute
   SignupRoute: typeof SignupRoute
   SuperAdminRoute: typeof SuperAdminRoute
   ApiFunctionsProductAiLookupRoute: typeof ApiFunctionsProductAiLookupRoute
@@ -719,6 +732,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset-password': {
+      id: '/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof ResetPasswordRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/signup': {
@@ -1100,6 +1120,7 @@ const rootRouteChildren: RootRouteChildren = {
   ConfiancaRoute: ConfiancaRoute,
   EmpresasRoute: EmpresasRoute,
   LoginRoute: LoginRoute,
+  ResetPasswordRoute: ResetPasswordRoute,
   SignupRoute: SignupRoute,
   SuperAdminRoute: SuperAdminRoute,
   ApiFunctionsProductAiLookupRoute: ApiFunctionsProductAiLookupRoute,
